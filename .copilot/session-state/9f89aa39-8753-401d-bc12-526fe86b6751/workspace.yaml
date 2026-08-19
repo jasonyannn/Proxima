@@ -1,0 +1,10 @@
+id: 9f89aa39-8753-401d-bc12-526fe86b6751
+cwd: c:\Users\jason\OneDrive\Documents\Projects\Proxima
+git_root: C:\Users\jason
+branch: main
+client_name: vscode-agent-host
+name: "create me my project structure:\r\n\r\n\r\nproxima\r\napp.py\r\nagent.py \r\ndatabase.py \r\nprompt.py\r\n requirements.txt\r\n\r\n data/\r\n product.db"
+user_named: false
+summary_count: 0
+created_at: 2026-08-17T09:27:02.443Z
+updated_at: 2026-08-17T09:27:12.105Z

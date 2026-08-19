@@ -1,0 +1,14 @@
+{
+  "socketPath": "\\\\.\\pipe\\mcp-cb507dc0-89ef-4df8-892f-c0f81c00cc6f.sock",
+  "scheme": "pipe",
+  "headers": {
+    "Authorization": "Nonce f406eb93-765b-443a-ab6d-929b6992231f"
+  },
+  "pid": 18884,
+  "ideName": "Visual Studio Code",
+  "timestamp": 1787126940535,
+  "workspaceFolders": [
+    "c:\\Users\\jason\\OneDrive\\Documents\\Projects\\Proxima"
+  ],
+  "isTrusted": true
+}
