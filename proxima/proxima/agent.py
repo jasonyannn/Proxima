@@ -1,4 +1,5 @@
 import re
+import requests
 from typing import Any
 
 try:
@@ -8,9 +9,11 @@ except ImportError:  # pragma: no cover
 
 
 class ProximaAgent:
-    def __init__(self, database: DatabaseManager | None = None, system_prompt: str = "") -> None:
+    def __init__(self, database: DatabaseManager | None = None, system_prompt: str = "", ollama_host: str = "http://localhost:11434") -> None:
         self.database = database or DatabaseManager()
         self.system_prompt = system_prompt
+        self.ollama_host = ollama_host
+        self.model = "llama3.2"
 
     def understand_intent(self, user_input: str) -> dict[str, Any]:
         text = user_input.strip()
@@ -97,22 +100,42 @@ class ProximaAgent:
         intent = self.understand_intent(user_input)
         memory_entry = self.maybe_modify_database(intent)
 
-        if self.system_prompt:
-            prefix = self.system_prompt
-        else:
-            prefix = "You are Proxima, a product operations assistant."
+        # Build the prompt with context
+        context = ""
+        if memory_entry:
+            context = f"\nRecognized: {memory_entry['type']}\nTitle: {memory_entry['title']}\nPriority: {memory_entry.get('priority', 'N/A')}\nImpact: {memory_entry.get('impact', 'N/A')}\nStatus: {memory_entry.get('status', 'N/A')}\nSaved to product memory."
 
-        if memory_entry is None:
-            return f"{prefix}\n\nUnderstood: {intent.get('type', 'Unknown')}\nInput: {user_input}"
+        # Call Ollama with the system prompt
+        try:
+            response_text = self._query_ollama(user_input, context)
+            return response_text
+        except Exception as e:
+            # Fallback if Ollama is unavailable
+            default_response = f"Understood: {intent.get('type', 'Unknown')}"
+            if context:
+                default_response += context
+            return default_response
 
-        return (
-            f"{prefix}\n\nRecognized: {memory_entry['type']}\n"
-            f"Title: {memory_entry['title']}\n"
-            f"Priority: {memory_entry.get('priority', 'N/A')}\n"
-            f"Impact: {memory_entry.get('impact', 'N/A')}\n"
-            f"Status: {memory_entry.get('status', 'N/A')}\n"
-            f"Saved to product memory."
-        )
+    def _query_ollama(self, user_input: str, context: str = "") -> str:
+        """Query Ollama with the system prompt and user input."""
+        prompt = f"{self.system_prompt}\n\nUser: {user_input}{context}\n\nAssistant:"
+        
+        try:
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "temperature": 0.3,
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("response", "No response from model").strip()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Failed to connect to Ollama at {self.ollama_host}: {str(e)}")
 
     def maybe_modify_database(self, intent: dict[str, Any]) -> dict[str, Any] | None:
         entry_type = str(intent.get("type", "")).lower()
