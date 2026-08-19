@@ -96,7 +96,7 @@ class ProximaAgent:
             return "negative"
         return "neutral"
 
-    def generate_response(self, user_input: str) -> str:
+    def generate_response(self, user_input: str, conversation_history: list[dict] = None) -> str:
         intent = self.understand_intent(user_input)
         memory_entry = self.maybe_modify_database(intent)
 
@@ -105,9 +105,9 @@ class ProximaAgent:
         if memory_entry:
             context = f"\nRecognized: {memory_entry['type']}\nTitle: {memory_entry['title']}\nPriority: {memory_entry.get('priority', 'N/A')}\nImpact: {memory_entry.get('impact', 'N/A')}\nStatus: {memory_entry.get('status', 'N/A')}\nSaved to product memory."
 
-        # Call Ollama with the system prompt
+        # Call Ollama with the system prompt and conversation history
         try:
-            response_text = self._query_ollama(user_input, context)
+            response_text = self._query_ollama(user_input, context, conversation_history)
             return response_text
         except Exception as e:
             # Fallback if Ollama is unavailable
@@ -116,9 +116,19 @@ class ProximaAgent:
                 default_response += context
             return default_response
 
-    def _query_ollama(self, user_input: str, context: str = "") -> str:
-        """Query Ollama with the system prompt and user input."""
-        prompt = f"{self.system_prompt}\n\nUser: {user_input}{context}\n\nAssistant:"
+    def _query_ollama(self, user_input: str, context: str = "", conversation_history: list[dict] = None) -> str:
+        """Query Ollama with the system prompt, conversation history, and user input."""
+        if conversation_history is None:
+            conversation_history = []
+        
+        # Build conversation context
+        conversation_text = ""
+        if conversation_history:
+            conversation_text = "\nPrevious conversation:\n"
+            for msg in conversation_history[-5:]:  # Last 5 messages for context
+                conversation_text += f"User: {msg.get('user', '')}\nAssistant: {msg.get('agent', '')}\n"
+        
+        prompt = f"{self.system_prompt}{conversation_text}\n\nUser: {user_input}{context}\n\nAssistant:"
         
         try:
             response = requests.post(
