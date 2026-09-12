@@ -7,3 +7,27 @@ port = 8501
 
 [browser]
 gatherUsageStats = false
+
+# Theme tokens for Streamlit's own widgets. These must stay in step with the
+# palette in proxima/theme.py — that module styles everything Streamlit does
+# not expose here, and the two are designed to read as one surface.
+[theme]
+base = "dark"
+primaryColor = "#4D7CFE"
+backgroundColor = "#0A0B0E"
+secondaryBackgroundColor = "#121620"
+textColor = "#E9ECF1"
+linkColor = "#7CA0FF"
+codeBackgroundColor = "#0D0F13"
+borderColor = "#242A36"
+font = "Inter, system-ui, -apple-system, sans-serif"
+headingFont = "Space Grotesk, Inter, system-ui, sans-serif"
+codeFont = "JetBrains Mono, SF Mono, ui-monospace, monospace"
+baseFontSize = 15
+baseRadius = "medium"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#0D0F13"
+secondaryBackgroundColor = "#121620"
+borderColor = "#242A36"

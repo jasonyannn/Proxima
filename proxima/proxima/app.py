@@ -1,4 +1,5 @@
 import streamlit as st
+import requests
 from datetime import datetime
 
 try:
@@ -8,6 +9,7 @@ try:
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from .copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from .seed_data import seed
+    from . import theme
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent
     from database import DatabaseManager
@@ -15,13 +17,18 @@ except ImportError:  # pragma: no cover
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from seed_data import seed
+    import theme
 
+
+OLLAMA_HOST = "http://localhost:11434"
 
 st.set_page_config(
     page_title="Proxima PM Agent",
     page_icon="🤖",
     layout="wide",
 )
+
+theme.inject()
 
 
 @st.cache_resource
@@ -32,7 +39,24 @@ def get_database() -> DatabaseManager:
 
 
 def get_agent() -> ProximaAgent:
-    return ProximaAgent(database=get_database(), system_prompt=SYSTEM_PROMPT)
+    return ProximaAgent(
+        database=get_database(),
+        system_prompt=SYSTEM_PROMPT,
+        ollama_host=OLLAMA_HOST,
+    )
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def llm_online() -> bool:
+    """Is the local model server up? Drives the status light in the masthead.
+
+    Cached briefly so a rerun does not fire a request per widget interaction.
+    """
+    try:
+        requests.get(f"{OLLAMA_HOST}/api/tags", timeout=1.5).raise_for_status()
+        return True
+    except requests.exceptions.RequestException:
+        return False
 
 
 db = get_database()
@@ -42,6 +66,8 @@ ip_analyzer = CopyrightAnalyzer(db)
 STATUS_ICON = {STATUS_MATCH: "✅", STATUS_PARTIAL: "🟡", "Gap": "❌"}
 RISK_COLOR = {"Low": "🟢", "Moderate": "🟡", "Elevated": "🟠", "High": "🔴"}
 THREAT_COLOR = {"Low": "🟢", "Moderate": "🟡", "High": "🔴"}
+# Threat and risk levels map onto the pill tones in the theme.
+RISK_TONE = {"Low": "ok", "Moderate": "warn", "Elevated": "warn", "High": "danger"}
 
 # Initialize session state
 if "chats" not in st.session_state:
@@ -52,36 +78,39 @@ if "current_chat_id" not in st.session_state:
 
 # Sidebar for chat management
 with st.sidebar:
-    st.title("💬 Chats")
+    theme.section("Sessions", index="01")
 
-    if st.button("➕ New Chat", use_container_width=True):
+    if st.button("New chat", use_container_width=True, type="primary"):
         new_chat_id = f"chat_{len(st.session_state.chats)}_{datetime.now().timestamp()}"
         st.session_state.chats[new_chat_id] = {"messages": [], "created": datetime.now()}
         st.session_state.current_chat_id = new_chat_id
         st.rerun()
 
-    st.divider()
-
     # List all chats
     if st.session_state.chats:
         for chat_id, chat_data in st.session_state.chats.items():
-            chat_preview = f"Chat {list(st.session_state.chats.keys()).index(chat_id) + 1}"
+            index = list(st.session_state.chats.keys()).index(chat_id) + 1
+            chat_preview = f"Chat {index:02d}"
             if chat_data["messages"]:
                 first_msg = chat_data["messages"][0].get("user", "")[:30]
                 chat_preview = first_msg + "..." if len(first_msg) > 25 else first_msg
 
-            if st.button(chat_preview, use_container_width=True, key=f"select_{chat_id}"):
+            active = chat_id == st.session_state.current_chat_id
+            label = f"▸ {chat_preview}" if active else chat_preview
+            if st.button(label, use_container_width=True, key=f"select_{chat_id}"):
                 st.session_state.current_chat_id = chat_id
                 st.rerun()
     else:
-        st.info("No chats yet. Create a new one to get started!")
+        st.caption("No sessions yet — start one above.")
 
     st.divider()
-    st.caption("Workspace")
-    st.caption(
-        f"{len(db.list_features())} features · "
-        f"{len(db.list_competitors())} competitors · "
-        f"{len(db.list_competitor_features())} rival features"
+    theme.section("Workspace", index="02")
+    theme.pills(
+        [
+            (f"{len(db.list_features())} features", "accent"),
+            (f"{len(db.list_competitors())} competitors", ""),
+            (f"{len(db.list_competitor_features())} rival", ""),
+        ]
     )
     if st.button("Load sample competitors", use_container_width=True):
         counts = seed(db)
@@ -91,11 +120,20 @@ with st.sidebar:
         )
         st.rerun()
 
-st.title("🤖 PRODUCT MANAGEMENT AGENT")
-st.caption("Turn customer feedback into structured product decisions.")
+theme.hero(
+    title="Product Management Agent",
+    subtitle="Turn customer feedback into structured product decisions.",
+    eyebrow="Proxima // Product intelligence system",
+    stats=[
+        (len(db.list_features()), "Features"),
+        (len(db.list_competitors()), "Competitors"),
+        (len(db.list_competitor_features()), "Rival features"),
+    ],
+    online=llm_online(),
+)
 
 chat_tab, compare_tab, ip_tab = st.tabs(
-    ["💬 Chat", "📊 Competitor Comparison", "⚖️ Copyright Analyser"]
+    ["Chat", "Competitor Comparison", "Copyright Analyser"]
 )
 
 
@@ -111,27 +149,33 @@ with chat_tab:
     messages = current_chat.get("messages", [])
 
     if messages:
-        st.subheader("Conversation")
+        theme.section("Transcript", index="01")
         for item in messages:
             with st.chat_message("user"):
                 st.markdown(item["user"])
             with st.chat_message("assistant"):
                 st.markdown(item["agent"])
     else:
-        st.info("Start a conversation! Try: 'We've had 20 customers asking for dark mode.'")
+        theme.empty_state(
+            label="Session ready",
+            title="Tell Proxima what your customers are saying",
+            body="Paste raw feedback and it comes back as a structured product decision. Try:",
+            example="We've had 20 customers asking for dark mode.",
+        )
 
     st.divider()
     col1, col2 = st.columns([5, 1])
 
     with col1:
         user_input = st.text_input(
-            "Message Proxima...",
+            "Message Proxima",
             placeholder="Customers keep asking for dark mode...",
             key="user_input",
+            label_visibility="collapsed",
         )
 
     with col2:
-        send_button = st.button("Send", use_container_width=True)
+        send_button = st.button("Send", use_container_width=True, type="primary")
 
     if send_button and user_input.strip():
         agent = get_agent()
@@ -146,7 +190,7 @@ with chat_tab:
 
         st.rerun()
 
-    with st.expander("📝 Example prompts"):
+    with st.expander("Example prompts"):
         st.code(
             "We've had 20 customers asking for dark mode.\n"
             "Users keep reporting sign-out fails after refresh.\n"
@@ -158,10 +202,13 @@ with chat_tab:
 
 # ------------------------------------------------- Competitor comparison tab
 with compare_tab:
-    st.subheader("Where you stand against the competition")
-    st.caption(
-        "Matches your shipped features against each competitor's, then shows the "
-        "gaps you need to close and the ground you own."
+    theme.section(
+        "Where you stand",
+        note=(
+            "Matches your shipped features against each competitor's, then shows the "
+            "gaps you need to close and the ground you own."
+        ),
+        index="01",
     )
 
     competitors = db.list_competitors()
@@ -194,17 +241,17 @@ with compare_tab:
             for col, score in zip(cols, scores):
                 with col:
                     st.metric(
-                        f"{THREAT_COLOR[score.threat]} {score.name}",
+                        score.name,
                         f"{int(score.overlap * 100)}% overlap",
                         f"{len(score.their_advantage)} unanswered",
                         delta_color="inverse",
                     )
-                    st.caption(f"Threat: {score.threat}")
+                    theme.pills([(f"Threat: {score.threat}", RISK_TONE[score.threat])])
 
             st.divider()
 
             # --- coverage matrix
-            st.markdown("#### Feature coverage matrix")
+            theme.section("Feature coverage matrix", index="02")
             matrix = competitor_analyzer.build_matrix(our_features, selected)
             table = []
             for row in matrix:
@@ -226,7 +273,7 @@ with compare_tab:
             left, right = st.columns(2)
 
             with left:
-                st.markdown("#### ❌ Gaps to close")
+                theme.section("Gaps to close", index="03")
                 if gaps["we_are_missing"]:
                     for gap in gaps["we_are_missing"]:
                         with st.expander(f"**{gap['feature']}** — {gap['pressure']}"):
@@ -236,7 +283,7 @@ with compare_tab:
                     st.success("No gaps found against the selected competitors.")
 
             with right:
-                st.markdown("#### ⭐ Your differentiators")
+                theme.section("Your differentiators", index="04")
                 if gaps["our_differentiators"]:
                     for item in gaps["our_differentiators"]:
                         with st.expander(f"**{item['feature']}**"):
@@ -248,7 +295,7 @@ with compare_tab:
             st.divider()
 
             # --- LLM narrative
-            if st.button("🧠 Ask Proxima for a strategic read"):
+            if st.button("Ask Proxima for a strategic read", type="primary"):
                 briefing = competitor_analyzer.summary_prompt(gaps, scores)
                 agent = get_agent()
                 with st.spinner("Analysing position..."):
@@ -260,7 +307,7 @@ with compare_tab:
                 st.markdown(narrative)
 
     st.divider()
-    with st.expander("➕ Manage competitors"):
+    with st.expander("Manage competitors"):
         st.markdown("**Add or update a competitor**")
         with st.form("add_competitor", clear_on_submit=True):
             name = st.text_input("Name")
@@ -312,10 +359,13 @@ with compare_tab:
 
 # --------------------------------------------------- Copyright analyser tab
 with ip_tab:
-    st.subheader("Copyright & IP risk check")
-    st.caption(
-        "Checks a feature you're about to build against competitor material in this "
-        "workspace, separating the idea from the way it's expressed."
+    theme.section(
+        "Copyright & IP risk check",
+        note=(
+            "Checks a feature you're about to build against competitor material in this "
+            "workspace, separating the idea from the way it's expressed."
+        ),
+        index="01",
     )
     st.info(DISCLAIMER, icon="⚖️")
 
@@ -339,7 +389,7 @@ with ip_tab:
                 "The more detail, the better the wording analysis."
             ),
         )
-        run_ip = st.form_submit_button("Analyse risk")
+        run_ip = st.form_submit_button("Analyse risk", type="primary")
 
     if run_ip and proposed_title.strip():
         report = ip_analyzer.analyze(
@@ -352,10 +402,11 @@ with ip_tab:
         with head_left:
             st.metric(
                 "Risk level",
-                f"{RISK_COLOR[report.risk_level]} {report.risk_level}",
+                report.risk_level,
                 f"{report.risk_score}/100",
                 delta_color="off",
             )
+            theme.pills([(report.risk_level, RISK_TONE[report.risk_level])])
         with head_right:
             st.progress(min(report.risk_score / 100, 1.0))
             st.caption(
@@ -364,7 +415,7 @@ with ip_tab:
             )
 
         st.divider()
-        st.markdown("#### Closest competitor features")
+        theme.section("Closest competitor features", index="02")
         if report.matches:
             st.dataframe(
                 [
@@ -390,7 +441,7 @@ with ip_tab:
             st.success("Nothing in the workspace resembles this feature.")
 
         st.divider()
-        st.markdown("#### Findings")
+        theme.section("Findings", index="03")
         for finding in report.findings:
             icon = {
                 "High": "🔴",
@@ -407,7 +458,7 @@ with ip_tab:
                     st.code(finding.evidence, language="text")
 
         st.divider()
-        st.markdown("#### Recommended actions")
+        theme.section("Recommended actions", index="04")
         for recommendation in report.recommendations:
             st.markdown(f"- {recommendation}")
 
@@ -419,7 +470,7 @@ with ip_tab:
             report=report.to_json(),
         )
 
-        if st.button("🧠 Ask Proxima to explain this in plain language"):
+        if st.button("Ask Proxima to explain this in plain language", type="primary"):
             agent = get_agent()
             with st.spinner("Writing up..."):
                 narrative = agent.generate_response(
@@ -432,7 +483,7 @@ with ip_tab:
 
     past = db.list_ip_assessments()
     if past:
-        with st.expander(f"🗂 Assessment history ({len(past)})"):
+        with st.expander(f"Assessment history ({len(past)})"):
             st.dataframe(
                 [
                     {
