@@ -139,7 +139,8 @@ def recall_digest(limit: int = 6) -> str:
             continue
         for exchange in chat["messages"][-2:]:
             asked = exchange.get("user", "").strip().replace("\n", " ")
-            replied = exchange.get("agent", "").strip().replace("\n", " ")
+            # An exchange still waiting on its reply carries agent=None.
+            replied = (exchange.get("agent") or "").strip().replace("\n", " ")
             if asked:
                 lines.append(f"- They said: {asked[:160]} | You answered: {replied[:160]}")
         if len(lines) >= limit:
@@ -322,13 +323,22 @@ with chat_tab:
     current_chat = st.session_state.chats.get(st.session_state.current_chat_id, {})
     messages = current_chat.get("messages", [])
 
+    # An exchange with agent=None is one whose question is already on screen but
+    # whose reply has not been asked for yet. It keeps a slot in the transcript
+    # and is answered at the bottom of the tab, once the page has been painted.
+    pending = None
+
     if messages:
         theme.section("Transcript", index="01")
-        for item in messages:
+        for index, item in enumerate(messages):
             with st.chat_message("user"):
                 st.markdown(item["user"])
             with st.chat_message("assistant"):
-                st.markdown(item["agent"])
+                if item.get("agent") is None:
+                    pending = (index, item, st.empty())
+                    pending[2].markdown("_Proxima is thinking..._")
+                else:
+                    st.markdown(item["agent"])
     else:
         theme.empty_state(
             label="Session ready",
@@ -361,14 +371,12 @@ with chat_tab:
         send_button = st.button("Send", use_container_width=True, type="primary")
 
     if send_button and user_input.strip():
-        agent = get_agent()
-
-        with st.spinner("Proxima is thinking..."):
-            response = agent.generate_response(user_input, conversation_history=messages)
-
+        # Record the question with no answer yet and rerun immediately: the
+        # message shows up at once, and the transcript above generates the
+        # reply into it on that next pass.
         if st.session_state.current_chat_id in st.session_state.chats:
             st.session_state.chats[st.session_state.current_chat_id]["messages"].append(
-                {"user": user_input, "agent": response}
+                {"user": user_input, "agent": None}
             )
 
         st.rerun()
@@ -381,6 +389,17 @@ with chat_tab:
             "Should we prioritize the payment flow over the onboarding?",
             language="text",
         )
+
+    # Last thing in the tab: the question and the input box are both on screen
+    # before the model is called, and the answer lands in the slot held above.
+    if pending is not None:
+        pending_index, pending_item, slot = pending
+        with slot.container(), st.spinner("Proxima is thinking..."):
+            pending_item["agent"] = get_agent().generate_response(
+                pending_item["user"],
+                conversation_history=messages[:pending_index],
+            )
+        slot.markdown(pending_item["agent"])
 
 
 # ------------------------------------------------- Competitor comparison tab
