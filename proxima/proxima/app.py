@@ -408,11 +408,13 @@ with chat_tab:
     # before the model is called, and the answer lands in the slot held above.
     if pending is not None:
         pending_index, pending_item, slot = pending
-        with slot.container(), st.spinner("Proxima is thinking..."):
-            pending_item["agent"] = get_agent().generate_response(
-                pending_item["user"],
-                conversation_history=messages[:pending_index],
-            )
+        # The slot keeps showing its placeholder line for the whole call — a
+        # spinner drawn into it here would only blank it out until the reply
+        # arrives.
+        pending_item["agent"] = get_agent().generate_response(
+            pending_item["user"],
+            conversation_history=messages[:pending_index],
+        )
         slot.markdown(pending_item["agent"])
 
 
