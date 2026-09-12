@@ -369,41 +369,55 @@ code, pre, kbd {
 }
 
 /* ============================================================== tabs === */
-.stTabs [data-baseweb="tab-list"] {
+/* Streamlit 1.63 renders tabs with React Aria, not BaseWeb: the list is a
+   [role="tablist"] and each tab carries data-testid="stTab". */
+.stTabs [role="tablist"] {
   gap: 4px;
   padding: 4px;
   border-radius: 11px;
   border: 1px solid var(--px-line);
   background: var(--px-bg-alt);
+  display: inline-flex;
+  flex-wrap: wrap;
 }
 
-.stTabs [data-baseweb="tab-list"] [data-baseweb="tab-highlight"],
-.stTabs [data-baseweb="tab-list"] [data-baseweb="tab-border"] {
-  display: none;
-}
+/* Kill the default underline indicator. */
+.stTabs [role="tablist"]::after,
+.stTabs [role="tablist"]::before { display: none; }
 
-.stTabs [data-baseweb="tab"] {
+[data-testid="stTab"] {
   height: auto;
   padding: 9px 18px;
   border-radius: 8px;
   color: var(--px-faint);
+  cursor: pointer;
+  border-bottom: none !important;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+[data-testid="stTab"] [data-testid="stMarkdownContainer"] p {
   font-family: var(--px-font-mono);
   font-size: 0.71rem;
   font-weight: 500;
   letter-spacing: 0.13em;
   text-transform: uppercase;
-  transition: background 0.16s ease, color 0.16s ease;
+  margin: 0;
 }
 
-.stTabs [data-baseweb="tab"]:hover {
+[data-testid="stTab"]:hover {
   background: var(--px-surface);
   color: var(--px-dim);
 }
 
-.stTabs [data-baseweb="tab"][aria-selected="true"] {
+[data-testid="stTab"][aria-selected="true"],
+[data-testid="stTab"][data-selected="true"] {
   background: var(--px-surface-hi);
   color: var(--px-text);
   box-shadow: inset 0 0 0 1px var(--px-line);
+}
+
+[data-testid="stTab"][aria-selected="true"] [data-testid="stMarkdownContainer"] p {
+  color: var(--px-text);
 }
 
 /* ============================================================ buttons === */
@@ -446,36 +460,63 @@ code, pre, kbd {
 }
 
 /* ============================================================= inputs === */
-[data-baseweb="input"], [data-baseweb="textarea"], [data-baseweb="select"] > div {
+[data-testid="stTextInputRootElement"],
+[data-testid="stTextAreaRootElement"],
+[data-testid="stSelectbox"] .react-aria-Group,
+[data-testid="stMultiSelect"] .react-aria-Group {
   border-radius: 9px !important;
-  border-color: var(--px-line) !important;
+  border: 1px solid var(--px-line) !important;
   background: var(--px-bg-alt) !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-[data-baseweb="input"]:focus-within,
-[data-baseweb="textarea"]:focus-within,
-[data-baseweb="select"] > div:focus-within {
+[data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextAreaRootElement"]:focus-within,
+[data-testid="stSelectbox"] .react-aria-Group:focus-within,
+[data-testid="stMultiSelect"] .react-aria-Group:focus-within {
   border-color: var(--px-accent) !important;
   box-shadow: 0 0 0 3px var(--px-accent-dim) !important;
 }
 
-[data-testid="stWidgetLabel"] label p {
+[data-testid="stTextInputField"],
+[data-testid="stTextAreaRootElement"] textarea {
+  background: transparent !important;
+  color: var(--px-text) !important;
+  font-family: var(--px-font-body) !important;
+}
+
+/* Widget labels become uppercase mono micro-type. */
+[data-testid="stWidgetLabel"] p {
   font-family: var(--px-font-mono);
   font-size: 0.66rem !important;
   font-weight: 500;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--px-faint);
+  margin-bottom: 0.3rem;
 }
 
 /* Multiselect tokens read as accent tags. */
-[data-baseweb="tag"] {
+[data-testid="stMultiSelectTagsContainer"] > * {
   background: var(--px-accent-dim) !important;
   border: 1px solid rgba(77, 124, 254, 0.34) !important;
   color: var(--px-accent-hi) !important;
   border-radius: 6px !important;
   font-family: var(--px-font-mono) !important;
   font-size: 0.7rem !important;
+}
+
+/* Dropdown surfaces float above the app; keep them on-palette. */
+.react-aria-Popover, .react-aria-ListBox {
+  background: var(--px-surface) !important;
+  border: 1px solid var(--px-line) !important;
+  border-radius: 10px !important;
+}
+
+.react-aria-ListBoxItem[data-focused="true"],
+.react-aria-ListBoxItem[data-selected="true"] {
+  background: var(--px-accent-dim) !important;
+  color: var(--px-text) !important;
 }
 
 /* ============================================================ metrics === */
@@ -534,7 +575,7 @@ code, pre, kbd {
 }
 
 /* Alerts: flat, left-marked, no candy fills. */
-[data-testid="stAlertContainer"], [data-testid="stNotification"] {
+[data-testid="stAlertContainer"], [data-testid="stAlert"] {
   border-radius: 10px;
   border: 1px solid var(--px-line);
   border-left-width: 3px;
