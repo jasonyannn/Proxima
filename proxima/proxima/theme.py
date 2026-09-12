@@ -420,6 +420,26 @@ code, pre, kbd {
   color: var(--px-text);
 }
 
+/* React Aria draws a 2px underline beneath the active tab; the filled pill
+   already carries that job, so the bar is just noise. */
+.stTabs .react-aria-SelectionIndicator { display: none !important; }
+
+/* Icon-only popover triggers (the chat ⋯ menu and the mic) do not need the
+   dropdown chevron — the glyph is the affordance. */
+[data-testid="stPopover"] button [data-testid="stIconMaterial"] { display: none; }
+
+[data-testid="stPopover"] button {
+  padding-left: 0.4rem;
+  padding-right: 0.4rem;
+}
+
+/* Popover surfaces sit above the app; keep them on-palette. */
+[data-testid="stPopoverBody"] {
+  background: var(--px-surface);
+  border: 1px solid var(--px-line);
+  border-radius: 11px;
+}
+
 /* ============================================================ buttons === */
 .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
   border-radius: 9px;
@@ -602,6 +622,20 @@ code, pre, kbd {
   background: var(--px-bg-alt);
 }
 
+/* Streamlit's default avatars ship in stock red/orange; bring them onto the
+   palette so the transcript reads as one surface. */
+[data-testid="stChatMessageAvatarUser"] {
+  background: var(--px-accent) !important;
+  color: #07090F !important;
+  border: none !important;
+}
+
+[data-testid="stChatMessageAvatarAssistant"] {
+  background: var(--px-surface-hi) !important;
+  color: var(--px-volt) !important;
+  border: 1px solid var(--px-line) !important;
+}
+
 /* ============================================================ tables === */
 [data-testid="stDataFrame"] {
   border: 1px solid var(--px-line);
@@ -621,6 +655,56 @@ hr, [data-testid="stDivider"] hr {
 [data-testid="stProgress"] > div > div > div {
   background: linear-gradient(90deg, var(--px-accent), var(--px-volt));
 }
+
+/* ===================================================== selected session === */
+/* Streamlit stamps `st-key-<widget key>` onto each element container, so keying
+   the active chat button `pxactive_<id>` is the only stable hook for styling
+   one button differently from its identical siblings. */
+[class*="st-key-pxactive_"] button {
+  background: var(--px-accent-dim) !important;
+  border-color: rgba(77, 124, 254, 0.55) !important;
+  color: var(--px-text) !important;
+  font-weight: 600 !important;
+  box-shadow: inset 3px 0 0 0 var(--px-accent) !important;
+}
+
+[class*="st-key-pxactive_"] button p { color: var(--px-text) !important; }
+
+/* ========================================================= demo banner === */
+.px-demo {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid rgba(255, 176, 32, 0.34);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 13px 16px;
+  margin-bottom: 16px;
+  background: rgba(255, 176, 32, 0.07);
+}
+
+.px-demo-tag {
+  font-family: var(--px-font-mono);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--px-warn);
+  border: 1px solid rgba(255, 176, 32, 0.4);
+  border-radius: 5px;
+  padding: 3px 8px;
+  white-space: nowrap;
+  flex: none;
+  margin-top: 1px;
+}
+
+.px-demo-text {
+  color: var(--px-dim);
+  font-size: 0.85rem;
+  line-height: 1.55;
+}
+
+.px-demo-text b { color: var(--px-text); font-weight: 600; }
 
 /* ======================================================== empty state === */
 .px-empty {
@@ -769,6 +853,25 @@ def empty_state(title: str, body: str, label: str = "No data yet", example: str 
           <div class="px-empty-label">{html.escape(label)}</div>
           <div class="px-empty-title">{html.escape(title)}</div>
           <div class="px-empty-body">{html.escape(body)}{hint}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def demo_banner(names) -> None:
+    """Flag that the numbers on screen come from the fictional sample set."""
+    listed = ", ".join(html.escape(name) for name in names)
+    st.markdown(
+        f"""
+        <div class="px-demo">
+          <span class="px-demo-tag">Demo data</span>
+          <div class="px-demo-text">
+            <b>{listed}</b> are invented placeholders, not real companies, and
+            their feature lists are made up. Every number below is calculated
+            from them — replace them with your own research before acting on
+            any of it. Clear them from the sidebar.
+          </div>
         </div>
         """,
         unsafe_allow_html=True,

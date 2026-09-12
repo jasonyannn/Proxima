@@ -10,6 +10,7 @@ try:
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from .copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from .seed_data import seed
+    from . import seed_data
     from . import theme, voice
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent
@@ -18,6 +19,7 @@ except ImportError:  # pragma: no cover
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from seed_data import seed
+    import seed_data
     import theme, voice
 
 
@@ -42,7 +44,8 @@ def get_database() -> DatabaseManager:
 def get_agent() -> ProximaAgent:
     return ProximaAgent(
         database=get_database(),
-        system_prompt=SYSTEM_PROMPT,
+        # Rebuilt per call so a settings change takes effect on the next message.
+        system_prompt=tuned_system_prompt(),
         ollama_host=OLLAMA_HOST,
     )
 
@@ -79,16 +82,19 @@ def chat_title(chat_id: str) -> str:
         opening = chat["messages"][0].get("user", "").strip()
         if opening:
             return opening[:28] + "…" if len(opening) > 28 else opening
-    return f"Chat {list(st.session_state.chats).index(chat_id) + 1:02d}"
+    return f"Chat {chat.get('ordinal', 1):02d}"
 
 
 def new_chat() -> str:
     """Start a chat and make it current."""
-    chat_id = f"chat_{len(st.session_state.chats)}_{datetime.now().timestamp()}"
+    st.session_state.chat_counter = st.session_state.get("chat_counter", 0) + 1
+    chat_id = f"chat_{st.session_state.chat_counter}_{datetime.now().timestamp()}"
     st.session_state.chats[chat_id] = {
         "messages": [],
         "created": datetime.now(),
         "title": "",
+        # Fixed at creation so deleting a chat never renumbers the others.
+        "ordinal": st.session_state.chat_counter,
     }
     st.session_state.current_chat_id = chat_id
     return chat_id
@@ -101,6 +107,67 @@ def delete_chat(chat_id: str) -> None:
         # next() on an empty dict returns None, which the Chat tab treats as
         # "no session" and replaces with a fresh one.
         st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
+
+
+# Languages the agent can be told to answer in. Ollama's llama3.2 handles these
+# to varying degrees; the instruction is advisory, not a guarantee.
+LANGUAGES = [
+    "English",
+    "Spanish",
+    "French",
+    "German",
+    "Portuguese",
+    "Italian",
+    "Dutch",
+    "Hindi",
+    "Japanese",
+    "Korean",
+    "Chinese (Simplified)",
+    "Arabic",
+]
+
+
+def recall_digest(limit: int = 6) -> str:
+    """Condense earlier sessions into a short block for the system prompt.
+
+    Only the other chats — the active one is already passed as conversation
+    history — and only the most recent exchanges, so the prompt stays small.
+    """
+    lines = []
+    for chat_id, chat in reversed(list(st.session_state.chats.items())):
+        if chat_id == st.session_state.current_chat_id:
+            continue
+        for exchange in chat["messages"][-2:]:
+            asked = exchange.get("user", "").strip().replace("\n", " ")
+            replied = exchange.get("agent", "").strip().replace("\n", " ")
+            if asked:
+                lines.append(f"- They said: {asked[:160]} | You answered: {replied[:160]}")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines[:limit])
+
+
+def tuned_system_prompt() -> str:
+    """SYSTEM_PROMPT plus whatever the settings panel asks for."""
+    blocks = [SYSTEM_PROMPT]
+
+    language = st.session_state.get("setting_language", "English")
+    if language != "English":
+        blocks.append(
+            f"Always write your replies in {language}, even when the user writes "
+            "to you in another language. Keep product terminology accurate."
+        )
+
+    if st.session_state.get("setting_recall"):
+        digest = recall_digest()
+        if digest:
+            blocks.append(
+                "Context from this user's earlier sessions — use it to stay "
+                "consistent, and do not repeat advice you have already given:\n"
+                + digest
+            )
+
+    return "\n\n".join(blocks)
 
 
 def capture_speech():
@@ -160,18 +227,17 @@ with st.sidebar:
             open_col, menu_col = st.columns([5, 1], gap="small")
 
             with open_col:
-                label = f"▸ {title}" if active else title
-                if st.button(
-                    label,
-                    use_container_width=True,
-                    key=f"select_{chat_id}",
-                    help="Open this chat",
-                ):
+                # Streamlit stamps `st-key-<widget key>` onto each element
+                # container, which is the only stable way to style one button
+                # differently from its identical siblings. The theme paints
+                # anything keyed `pxactive_` as the selected session.
+                key = f"pxactive_{chat_id}" if active else f"select_{chat_id}"
+                if st.button(title, use_container_width=True, key=key):
                     st.session_state.current_chat_id = chat_id
                     st.rerun()
 
             with menu_col:
-                with st.popover("⋯", use_container_width=True):
+                with st.popover("⋮", use_container_width=True, help="Rename or delete"):
                     renamed = st.text_input(
                         "Rename",
                         value=title,
@@ -184,7 +250,6 @@ with st.sidebar:
                         "Delete chat",
                         key=f"delete_{chat_id}",
                         use_container_width=True,
-                        help="This cannot be undone",
                     ):
                         delete_chat(chat_id)
                         st.rerun()
@@ -200,13 +265,40 @@ with st.sidebar:
             (f"{len(db.list_competitor_features())} rival", ""),
         ]
     )
-    if st.button("Load sample competitors", use_container_width=True):
+    if st.button("Load demo data", use_container_width=True):
         counts = seed(db)
         st.success(
-            f"Loaded {counts['competitors']} competitors, "
+            f"Loaded {counts['competitors']} demo competitors, "
             f"{counts['competitor_features']} rival features."
         )
         st.rerun()
+
+    if seed_data.loaded_samples(db):
+        if st.button("Clear demo data", use_container_width=True):
+            removed = seed_data.clear_samples(db)
+            st.success(f"Removed {removed} demo competitors.")
+            st.rerun()
+
+    st.divider()
+    theme.section("Settings", index="03")
+
+    st.selectbox(
+        "Reply language",
+        options=LANGUAGES,
+        key="setting_language",
+        help="Proxima answers in this language whatever you type in.",
+    )
+
+    st.toggle(
+        "Learn from my chats",
+        key="setting_recall",
+        help="Feeds a short digest of your other sessions into the prompt.",
+    )
+    st.caption(
+        "Passes a summary of your earlier sessions to the agent as context. "
+        "It stays on this machine and does not change the model's weights — "
+        "this is recall, not training."
+    )
 
 theme.hero(
     title="Product Management Agent",
@@ -305,6 +397,11 @@ with compare_tab:
     competitors = db.list_competitors()
     our_features = db.list_features()
 
+    # Say plainly when the analysis is running on the fictional sample set.
+    samples_present = seed_data.loaded_samples(db)
+    if samples_present:
+        theme.demo_banner([c["name"] for c in samples_present])
+
     if not competitors:
         st.warning(
             "No competitors yet. Add one below, or click **Load sample competitors** "
@@ -337,7 +434,10 @@ with compare_tab:
                         f"{len(score.their_advantage)} unanswered",
                         delta_color="inverse",
                     )
-                    theme.pills([(f"Threat: {score.threat}", RISK_TONE[score.threat])])
+                    tags = [(f"Threat: {score.threat}", RISK_TONE[score.threat])]
+                    if score.name in seed_data.SAMPLE_COMPETITOR_NAMES:
+                        tags.append(("Demo", "warn"))
+                    theme.pills(tags)
 
             st.divider()
 

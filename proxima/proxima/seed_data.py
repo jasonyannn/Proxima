@@ -175,3 +175,30 @@ def seed(database: Any, *, include_our_features: bool = True) -> dict[str, int]:
             counts["our_features"] += 1
 
     return counts
+
+
+# Names of everything this module creates, so the UI can tell demo rows apart
+# from real research the user entered themselves and say so plainly.
+SAMPLE_COMPETITOR_NAMES = frozenset(entry["name"] for entry in SAMPLE_COMPETITORS)
+
+
+def loaded_samples(database: Any) -> list[dict[str, Any]]:
+    """Which sample competitors are currently in the workspace."""
+    return [
+        competitor
+        for competitor in database.list_competitors()
+        if competitor["name"] in SAMPLE_COMPETITOR_NAMES
+    ]
+
+
+def clear_samples(database: Any) -> int:
+    """Remove the sample competitors and their features. Returns how many went.
+
+    Only touches rows this module created — anything the user added by hand
+    stays put, including a real competitor that happens to sit alongside them.
+    """
+    removed = 0
+    for competitor in loaded_samples(database):
+        database.delete_competitor(competitor["id"])
+        removed += 1
+    return removed
