@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import hashlib
 from datetime import datetime
 
 try:
@@ -9,7 +10,7 @@ try:
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from .copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from .seed_data import seed
-    from . import theme
+    from . import theme, voice
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent
     from database import DatabaseManager
@@ -17,7 +18,7 @@ except ImportError:  # pragma: no cover
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from seed_data import seed
-    import theme
+    import theme, voice
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -69,6 +70,69 @@ THREAT_COLOR = {"Low": "🟢", "Moderate": "🟡", "High": "🔴"}
 # Threat and risk levels map onto the pill tones in the theme.
 RISK_TONE = {"Low": "ok", "Moderate": "warn", "Elevated": "warn", "High": "danger"}
 
+def chat_title(chat_id: str) -> str:
+    """Display name for a chat: an explicit title, else its opening line."""
+    chat = st.session_state.chats[chat_id]
+    if chat.get("title"):
+        return chat["title"]
+    if chat["messages"]:
+        opening = chat["messages"][0].get("user", "").strip()
+        if opening:
+            return opening[:28] + "…" if len(opening) > 28 else opening
+    return f"Chat {list(st.session_state.chats).index(chat_id) + 1:02d}"
+
+
+def new_chat() -> str:
+    """Start a chat and make it current."""
+    chat_id = f"chat_{len(st.session_state.chats)}_{datetime.now().timestamp()}"
+    st.session_state.chats[chat_id] = {
+        "messages": [],
+        "created": datetime.now(),
+        "title": "",
+    }
+    st.session_state.current_chat_id = chat_id
+    return chat_id
+
+
+def delete_chat(chat_id: str) -> None:
+    """Remove a chat, moving the selection to whatever is left."""
+    st.session_state.chats.pop(chat_id, None)
+    if st.session_state.current_chat_id == chat_id:
+        # next() on an empty dict returns None, which the Chat tab treats as
+        # "no session" and replaces with a fresh one.
+        st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
+
+
+def capture_speech():
+    """Mic control. Returns a transcript the first time a clip is recorded.
+
+    Rendered before the text box so the transcript can be pushed into it: a
+    widget's session_state entry cannot be written after the widget exists.
+    """
+    with st.popover("🎙", use_container_width=True):
+        if not voice.backend_available():
+            st.caption(
+                "Voice input needs a local transcriber. Install it with "
+                f"`{voice.INSTALL_HINT}`, then restart the app."
+            )
+            return None
+
+        st.caption("Record a message — it lands in the box for you to edit.")
+        clip = st.audio_input("Speak", key="voice_clip", label_visibility="collapsed")
+        if clip is None:
+            return None
+
+        # Each rerun hands back the same clip; transcribe a given one only once.
+        audio = clip.getvalue()
+        digest = hashlib.sha1(audio).hexdigest()
+        if st.session_state.get("voice_digest") == digest:
+            return None
+        st.session_state.voice_digest = digest
+
+        with st.spinner("Transcribing..."):
+            return voice.transcribe(audio) or None
+
+
 # Initialize session state
 if "chats" not in st.session_state:
     st.session_state.chats = {}
@@ -76,30 +140,54 @@ if "chats" not in st.session_state:
 if "current_chat_id" not in st.session_state:
     st.session_state.current_chat_id = None
 
+# Guarantee exactly one live chat before anything renders: the sidebar lists
+# sessions and the Chat tab reads the current one, so neither can be first.
+if not st.session_state.chats or st.session_state.current_chat_id is None:
+    new_chat()
+
 # Sidebar for chat management
 with st.sidebar:
     theme.section("Sessions", index="01")
 
     if st.button("New chat", use_container_width=True, type="primary"):
-        new_chat_id = f"chat_{len(st.session_state.chats)}_{datetime.now().timestamp()}"
-        st.session_state.chats[new_chat_id] = {"messages": [], "created": datetime.now()}
-        st.session_state.current_chat_id = new_chat_id
+        new_chat()
         st.rerun()
 
-    # List all chats
     if st.session_state.chats:
-        for chat_id, chat_data in st.session_state.chats.items():
-            index = list(st.session_state.chats.keys()).index(chat_id) + 1
-            chat_preview = f"Chat {index:02d}"
-            if chat_data["messages"]:
-                first_msg = chat_data["messages"][0].get("user", "")[:30]
-                chat_preview = first_msg + "..." if len(first_msg) > 25 else first_msg
-
+        for chat_id in list(st.session_state.chats):
+            title = chat_title(chat_id)
             active = chat_id == st.session_state.current_chat_id
-            label = f"▸ {chat_preview}" if active else chat_preview
-            if st.button(label, use_container_width=True, key=f"select_{chat_id}"):
-                st.session_state.current_chat_id = chat_id
-                st.rerun()
+            open_col, menu_col = st.columns([5, 1], gap="small")
+
+            with open_col:
+                label = f"▸ {title}" if active else title
+                if st.button(
+                    label,
+                    use_container_width=True,
+                    key=f"select_{chat_id}",
+                    help="Open this chat",
+                ):
+                    st.session_state.current_chat_id = chat_id
+                    st.rerun()
+
+            with menu_col:
+                with st.popover("⋯", use_container_width=True):
+                    renamed = st.text_input(
+                        "Rename",
+                        value=title,
+                        key=f"rename_{chat_id}",
+                    )
+                    if st.button("Save", key=f"save_{chat_id}", use_container_width=True):
+                        st.session_state.chats[chat_id]["title"] = renamed.strip()
+                        st.rerun()
+                    if st.button(
+                        "Delete chat",
+                        key=f"delete_{chat_id}",
+                        use_container_width=True,
+                        help="This cannot be undone",
+                    ):
+                        delete_chat(chat_id)
+                        st.rerun()
     else:
         st.caption("No sessions yet — start one above.")
 
@@ -139,12 +227,6 @@ chat_tab, compare_tab, ip_tab = st.tabs(
 
 # ---------------------------------------------------------------- Chat tab
 with chat_tab:
-    # Create first chat if none exist
-    if not st.session_state.chats:
-        new_chat_id = f"chat_0_{datetime.now().timestamp()}"
-        st.session_state.chats[new_chat_id] = {"messages": [], "created": datetime.now()}
-        st.session_state.current_chat_id = new_chat_id
-
     current_chat = st.session_state.chats.get(st.session_state.current_chat_id, {})
     messages = current_chat.get("messages", [])
 
@@ -164,9 +246,18 @@ with chat_tab:
         )
 
     st.divider()
-    col1, col2 = st.columns([5, 1])
+    input_col, mic_col, send_col = st.columns([5, 1, 1])
 
-    with col1:
+    # The mic renders first so a transcript can be written into the text box
+    # before that widget is created further down.
+    with mic_col:
+        spoken = capture_speech()
+
+    if spoken:
+        st.session_state.user_input = spoken
+        st.rerun()
+
+    with input_col:
         user_input = st.text_input(
             "Message Proxima",
             placeholder="Customers keep asking for dark mode...",
@@ -174,7 +265,7 @@ with chat_tab:
             label_visibility="collapsed",
         )
 
-    with col2:
+    with send_col:
         send_button = st.button("Send", use_container_width=True, type="primary")
 
     if send_button and user_input.strip():
