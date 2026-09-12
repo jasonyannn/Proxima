@@ -109,6 +109,24 @@ def delete_chat(chat_id: str) -> None:
         st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
 
 
+def submit_message() -> None:
+    """Queue whatever is in the box as an unanswered exchange.
+
+    Runs as a widget callback — from Enter in the text box or from the Send
+    button — so it fires before the script reruns, and the question is on
+    screen from that very pass. The reply is generated further down, once the
+    page is painted.
+    """
+    text = st.session_state.get("user_input", "").strip()
+    st.session_state.user_input = ""
+    if not text:
+        return
+
+    chat = st.session_state.chats.get(st.session_state.current_chat_id)
+    if chat is not None:
+        chat["messages"].append({"user": text, "agent": None})
+
+
 # Languages the agent can be told to answer in. Ollama's llama3.2 handles these
 # to varying degrees; the instruction is advisory, not a guarantee.
 LANGUAGES = [
@@ -360,26 +378,22 @@ with chat_tab:
         st.rerun()
 
     with input_col:
-        user_input = st.text_input(
+        # on_change fires when the box is committed — which is what Enter does.
+        st.text_input(
             "Message Proxima",
             placeholder="Customers keep asking for dark mode...",
             key="user_input",
             label_visibility="collapsed",
+            on_change=submit_message,
         )
 
     with send_col:
-        send_button = st.button("Send", use_container_width=True, type="primary")
-
-    if send_button and user_input.strip():
-        # Record the question with no answer yet and rerun immediately: the
-        # message shows up at once, and the transcript above generates the
-        # reply into it on that next pass.
-        if st.session_state.current_chat_id in st.session_state.chats:
-            st.session_state.chats[st.session_state.current_chat_id]["messages"].append(
-                {"user": user_input, "agent": None}
-            )
-
-        st.rerun()
+        st.button(
+            "Send",
+            use_container_width=True,
+            type="primary",
+            on_click=submit_message,
+        )
 
     with st.expander("Example prompts"):
         st.code(
