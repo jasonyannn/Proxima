@@ -85,3 +85,15 @@ wheels/
 .DS_Store
 Thumbs.db
 .copilot/
+
+# --- Proxima project ---
+.venv/
+venv/
+.pytest_cache/
+
+# The project-level Streamlit config IS part of the repo. The `.streamlit/`
+# rule near the top of this file comes from a Windows user-profile template
+# and would otherwise exclude it. Git cannot re-include a file whose parent
+# directory is excluded, so the directory must be negated first.
+!.streamlit/
+!.streamlit/config.toml

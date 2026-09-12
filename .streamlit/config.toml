@@ -1,0 +1,9 @@
+# Project-level Streamlit config.
+[server]
+# Skips the interactive "enter your email" prompt on first run, which otherwise
+# blocks startup when the app is launched from a script or CI.
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false

@@ -1,0 +1,11 @@
+{
+  "name": "proxima",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Proxima PM Agent — a Python/Streamlit app. These npm scripts are thin wrappers around run.sh so `npm run dev` works out of the box.",
+  "scripts": {
+    "dev": "./run.sh",
+    "start": "./run.sh",
+    "test": "./.venv/bin/python -W ignore proxima/tests/test_analysis.py"
+  }
+}
