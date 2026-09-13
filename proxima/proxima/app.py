@@ -1,10 +1,12 @@
 import streamlit as st
 import requests
 import hashlib
+from collections import Counter
 from datetime import datetime
+from pathlib import Path
 
 try:
-    from .agent import ProximaAgent, detect_saveable
+    from .agent import ProximaAgent, detect_saveable, suggestions_from_model
     from .database import DatabaseManager
     from .prompt import SYSTEM_PROMPT
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
@@ -13,7 +15,7 @@ try:
     from . import seed_data
     from . import theme, voice
 except ImportError:  # pragma: no cover
-    from agent import ProximaAgent, detect_saveable
+    from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
     from prompt import SYSTEM_PROMPT
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
@@ -25,11 +27,21 @@ except ImportError:  # pragma: no cover
 
 OLLAMA_HOST = "http://localhost:11434"
 
+# Brand assets live beside the code, so they resolve wherever the app is run
+# from. The mark is the glyph alone on transparency — a browser tab is small,
+# and the wordmark is illegible at 16px.
+ASSETS = Path(__file__).resolve().parent / "assets"
+LOGO = str(ASSETS / "proxima-logo.png")
+LOGO_MARK = str(ASSETS / "proxima-mark.png")
+
 st.set_page_config(
     page_title="Proxima PM Agent",
-    page_icon="🤖",
+    page_icon=LOGO_MARK,
     layout="wide",
 )
+
+# Sidebar lockup, collapsing to the glyph when the sidebar is closed.
+st.logo(LOGO, icon_image=LOGO_MARK, size="large")
 
 theme.inject()
 
@@ -151,135 +163,133 @@ def _level_index(value: str) -> int:
     return LEVELS.index(value) if value in LEVELS else 1
 
 
+def _shorten(text: str, limit: int = 26) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def chip_label(suggestion: dict) -> str:
+    """What the save button says. One press does exactly this."""
+    if suggestion["kind"] == "competitor":
+        return f"＋ Save {_shorten(suggestion['name'])} as competitor"
+    if suggestion["kind"] == "feedback":
+        return "＋ Save as feedback"
+    return f"＋ Save “{_shorten(suggestion.get('title', ''))}” as {suggestion['kind']}"
+
+
+def merge_suggestions(existing: list[dict], extra: list[dict]) -> list[dict]:
+    """Fold the model's reading into the keyword rules' first guess.
+
+    Where both described the same kind of thing, the model wins. The rules
+    build a feature title by slicing the sentence — "You To Analyse Whether
+    Building This Could Create Copyright" — and nobody wants that in a backlog.
+    Competitor names are left alone: there the rules are exact, and dropping one
+    the model happened to miss would lose it.
+    """
+    replaceable = {"feature", "bug", "feedback"} & {s["kind"] for s in extra}
+    kept = [
+        s
+        for s in existing
+        if s.get("source") != "rules" or s["kind"] not in replaceable
+    ]
+    seen = {s["label"] for s in kept}
+    return kept + [s for s in extra if s["label"] not in seen]
+
+
+def save_suggestion(item: dict, suggestion: dict) -> None:
+    """File one suggestion. Runs as a button callback.
+
+    A callback rather than an `if st.button(...)` body because the answer above
+    may still be streaming: a callback is applied before the script re-runs, so
+    the save lands whether or not the run that was in flight survives.
+    """
+    kind = suggestion["kind"]
+
+    if kind == "competitor":
+        row_id = db.upsert_competitor(
+            name=suggestion["name"],
+            positioning=suggestion.get("positioning") or None,
+        )
+        what, where = suggestion["name"], "Competitors"
+    elif kind == "feature":
+        row_id = db.create_feature(
+            title=suggestion["title"],
+            description=suggestion.get("description") or None,
+            priority=str(suggestion.get("priority", "Medium")).title(),
+            impact=str(suggestion.get("impact", "Medium")).title(),
+            effort=str(suggestion.get("effort", "Medium")).title(),
+            status=str(suggestion.get("status", "Backlog")).title(),
+        )
+        what, where = suggestion["title"], "Features"
+    elif kind == "bug":
+        row_id = db.create_bug(
+            title=suggestion["title"],
+            description=suggestion.get("description") or None,
+            severity=str(suggestion.get("severity", "Medium")).title(),
+            status=str(suggestion.get("status", "Open")).title(),
+        )
+        what, where = suggestion["title"], "Bugs"
+    else:
+        row_id = db.create_feedback(
+            source=suggestion.get("source") or None,
+            content=suggestion.get("content", ""),
+            sentiment=suggestion.get("sentiment", "neutral"),
+        )
+        what, where = "Feedback", "Feedback"
+
+    item.setdefault("saved", []).append(
+        {"label": suggestion["label"], "kind": kind, "id": row_id, "what": what, "where": where}
+    )
+    st.session_state.save_toast = f"{_shorten(what, 40)} saved to {where}."
+
+
+def undo_save(item: dict, entry: dict) -> None:
+    """Take back a save. The chip returns, so it can be filed again."""
+    remove = {
+        "competitor": db.delete_competitor,
+        "feature": db.delete_feature,
+        "bug": db.delete_bug,
+        "feedback": db.delete_feedback,
+    }[entry["kind"]]
+    remove(entry["id"])
+    item["saved"] = [e for e in item.get("saved", []) if e["label"] != entry["label"]]
+    st.session_state.save_toast = f"Removed {_shorten(entry['what'], 40)}."
+
+
 def render_save_actions(item: dict, index: int) -> None:
-    """Offer what a message mentioned as a one-click save.
+    """Offer what a message mentioned, as one-press saves.
 
     This is the only route into product memory: the agent answers, and filing
     anything is the user's decision, taken here.
     """
     saved = item.get("saved", [])
-    pending_suggestions = [
-        s for s in item.get("suggestions", []) if s["label"] not in saved
-    ]
-
-    if saved:
-        st.caption(
-            "  ".join(
-                f"✓ Saved {label.split(':', 1)[1] or 'entry'} → {label.split(':', 1)[0].title()}s"
-                for label in saved
-            )
-        )
-
-    if not pending_suggestions:
-        return
-
+    already = {entry["label"] for entry in saved}
+    offers = [s for s in item.get("suggestions", []) if s["label"] not in already]
     base = f"{st.session_state.current_chat_id}_{index}"
-    # Leave the trailing space empty so two chips do not stretch across the page.
-    widths = [1] * len(pending_suggestions) + [max(1, 4 - len(pending_suggestions))]
 
-    for column, suggestion in zip(st.columns(widths), pending_suggestions):
-        kind = suggestion["kind"]
-        key = f"save_{base}_{suggestion['label']}"
-        with column:
-            if kind == "competitor":
-                _competitor_chip(item, suggestion, key)
-            elif kind == "feature":
-                _feature_chip(item, suggestion, key)
-            elif kind == "bug":
-                _bug_chip(item, suggestion, key)
-            else:
-                _feedback_chip(item, suggestion, key)
-
-
-def _confirm_saved(item: dict, suggestion: dict, message: str) -> None:
-    item.setdefault("saved", []).append(suggestion["label"])
-    st.session_state.save_toast = message
-    st.rerun()
-
-
-def _competitor_chip(item: dict, suggestion: dict, key: str) -> None:
-    with st.popover(f"＋ Competitor: {suggestion['name']}", use_container_width=True):
-        st.caption("Mentioned as a rival. Save it to the Competitors tab.")
-        name = st.text_input("Name", value=suggestion["name"], key=f"{key}_name")
-        website = st.text_input("Website", key=f"{key}_site")
-        positioning = st.text_area("Positioning", height=70, key=f"{key}_pos")
-        if st.button("Save competitor", key=f"{key}_go", type="primary") and name.strip():
-            db.upsert_competitor(
-                name=name.strip(),
-                website=website.strip() or None,
-                positioning=positioning.strip() or None,
+    if offers:
+        # Leave the last column empty so two chips do not stretch the full width.
+        widths = [1] * len(offers) + [max(1, 4 - len(offers))]
+        for column, suggestion in zip(st.columns(widths), offers):
+            column.button(
+                chip_label(suggestion),
+                key=f"save_{base}_{suggestion['label']}",
+                use_container_width=True,
+                help=f"Files this under {suggestion['kind'].title()}s. You can undo it.",
+                on_click=save_suggestion,
+                args=(item, suggestion),
             )
-            _confirm_saved(item, suggestion, f"{name.strip()} saved to Competitors.")
 
-
-def _feature_chip(item: dict, suggestion: dict, key: str) -> None:
-    with st.popover("＋ Save as feature", use_container_width=True):
-        st.caption("Check the title before filing — it is read off your message.")
-        title = st.text_input("Title", value=suggestion.get("title", ""), key=f"{key}_title")
-        description = st.text_area(
-            "Description", value=suggestion.get("description", ""), height=80, key=f"{key}_desc"
+    for entry in saved:
+        note, undo, _ = st.columns([3, 1, 3])
+        note.caption(f"✓ Saved {_shorten(entry['what'], 34)} → {entry['where']}")
+        undo.button(
+            "Undo",
+            key=f"undo_{base}_{entry['label']}",
+            use_container_width=True,
+            on_click=undo_save,
+            args=(item, entry),
         )
-        left, mid, right = st.columns(3)
-        priority = left.selectbox(
-            "Priority", LEVELS, index=_level_index(suggestion.get("priority")), key=f"{key}_pri"
-        )
-        impact = mid.selectbox(
-            "Impact", LEVELS, index=_level_index(suggestion.get("impact")), key=f"{key}_imp"
-        )
-        effort = right.selectbox(
-            "Effort", LEVELS, index=_level_index(suggestion.get("effort")), key=f"{key}_eff"
-        )
-        status = st.selectbox("Status", FEATURE_STATUSES, key=f"{key}_status")
-        if st.button("Save feature", key=f"{key}_go", type="primary") and title.strip():
-            db.create_feature(
-                title=title.strip(),
-                description=description.strip() or None,
-                priority=priority,
-                impact=impact,
-                effort=effort,
-                status=status,
-            )
-            _confirm_saved(item, suggestion, f"“{title.strip()}” saved to Features.")
-
-
-def _bug_chip(item: dict, suggestion: dict, key: str) -> None:
-    with st.popover("＋ Save as bug", use_container_width=True):
-        title = st.text_input("Title", value=suggestion.get("title", ""), key=f"{key}_title")
-        description = st.text_area(
-            "Description", value=suggestion.get("description", ""), height=80, key=f"{key}_desc"
-        )
-        left, right = st.columns(2)
-        severity = left.selectbox(
-            "Severity", LEVELS, index=_level_index(suggestion.get("severity")), key=f"{key}_sev"
-        )
-        status = right.selectbox("Status", BUG_STATUSES, key=f"{key}_status")
-        if st.button("Save bug", key=f"{key}_go", type="primary") and title.strip():
-            db.create_bug(
-                title=title.strip(),
-                description=description.strip() or None,
-                severity=severity,
-                status=status,
-            )
-            _confirm_saved(item, suggestion, f"“{title.strip()}” saved to Bugs.")
-
-
-def _feedback_chip(item: dict, suggestion: dict, key: str) -> None:
-    with st.popover("＋ Save as feedback", use_container_width=True):
-        source = st.text_input("Source", value=suggestion.get("source", "customer"), key=f"{key}_src")
-        content = st.text_area(
-            "Content", value=suggestion.get("content", ""), height=80, key=f"{key}_content"
-        )
-        sentiment = st.selectbox(
-            "Sentiment",
-            SENTIMENTS,
-            index=SENTIMENTS.index(suggestion.get("sentiment", "neutral")),
-            key=f"{key}_sent",
-        )
-        if st.button("Save feedback", key=f"{key}_go", type="primary") and content.strip():
-            db.create_feedback(
-                source=source.strip() or None, content=content.strip(), sentiment=sentiment
-            )
-            _confirm_saved(item, suggestion, "Feedback saved.")
 
 
 # Languages the agent can be told to answer in. Ollama's llama3.2 handles these
@@ -484,6 +494,7 @@ theme.hero(
         (len(db.list_competitor_features()), "Rival features"),
     ],
     online=llm_online(),
+    mark=LOGO_MARK,
 )
 
 chat_tab, memory_tab, compare_tab, ip_tab = st.tabs(
@@ -511,14 +522,18 @@ with chat_tab:
         for index, item in enumerate(messages):
             with st.chat_message("user"):
                 st.markdown(item["user"])
+
+            # Above the answer, not below it. An answer that is still streaming
+            # grows by a line every repaint, and anything underneath slides down
+            # the page as it does — a button nobody can reliably hit.
+            render_save_actions(item, index)
+
             with st.chat_message("assistant"):
                 if item.get("agent") is None:
                     pending = (index, item, st.empty())
                     pending[2].markdown("_Proxima is thinking..._")
                 else:
                     st.markdown(item["agent"])
-
-            render_save_actions(item, index)
     else:
         theme.empty_state(
             label="Session ready",
@@ -566,27 +581,8 @@ with chat_tab:
             language="text",
         )
 
-    # Last thing in the tab: the question and the input box are both on screen
-    # before the model is called, and the answer lands in the slot held above.
-    if pending is not None:
-        pending_index, pending_item, slot = pending
-        # Streamed into the slot as it is written, so a long analysis reads
-        # as progress rather than as a page that has hung.
-        written = ""
-        painted = 0
-        for piece in get_agent().stream_response(
-            pending_item["user"], conversation_history=messages[:pending_index]
-        ):
-            written += piece
-            # Repaint every few words, not every token — each update is a
-            # message to the browser.
-            if len(written) - painted >= 24:
-                painted = len(written)
-                slot.markdown(written + " ▍")
-
-        pending_item["agent"] = written
-        slot.markdown(written)
-
+    # The model is not called here. It runs at the very bottom of this file,
+    # once every tab has rendered — see "answering the pending message".
 
 
 # ------------------------------------------------------------- Features tab
@@ -622,6 +618,37 @@ with memory_tab:
             ),
             example="We've had 20 customers asking for dark mode.",
         )
+
+    # Earlier builds filed a row on every message, so most backlogs start out
+    # with a pile of duplicates nobody asked for. Clearing them one by one is
+    # not a fair ask.
+    duplicates = [
+        title for title, count in Counter(f["title"] for f in features).items() if count > 1
+    ]
+    if duplicates or len(features) > 1:
+        with st.popover("Clean up", use_container_width=False):
+            if duplicates:
+                st.caption(
+                    f"{len(duplicates)} title(s) appear more than once. Keeps the "
+                    "newest of each and removes the rest."
+                )
+                if st.button("Remove duplicate features", type="primary"):
+                    kept: set[str] = set()
+                    removed = 0
+                    for feature in features:  # newest first
+                        if feature["title"] in kept:
+                            db.delete_feature(feature["id"])
+                            removed += 1
+                        else:
+                            kept.add(feature["title"])
+                    st.session_state.save_toast = f"Removed {removed} duplicate features."
+                    st.rerun()
+            st.caption("Or empty the list entirely — this cannot be undone.")
+            if st.button(f"Delete all {len(features)} features"):
+                for feature in features:
+                    db.delete_feature(feature["id"])
+                st.session_state.save_toast = f"Deleted {len(features)} features."
+                st.rerun()
 
     if features:
         st.markdown("**Features**")
@@ -971,3 +998,48 @@ with ip_tab:
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+# ------------------------------------------- answering the pending message
+# Deliberately the last thing the script does. Streamlit paints a page in the
+# order the code runs, so anything after a blocking model call is stuck showing
+# the previous run's content until that call returns — which is how the Features
+# tab came to disagree with the sidebar about how many features exist. With the
+# call down here, every tab is already current before the model is asked
+# anything, and the answer streams into the slot the transcript held open.
+if pending is not None:
+    pending_index, pending_item, slot = pending
+
+    written = ""
+    painted = 0
+    for piece in get_agent().stream_response(
+        pending_item["user"], conversation_history=messages[:pending_index]
+    ):
+        written += piece
+        # Repaint every few words, not every token — each update is a message
+        # to the browser.
+        if len(written) - painted >= 24:
+            painted = len(written)
+            slot.markdown(written + " ▍")
+
+    pending_item["agent"] = written
+    slot.markdown(written)
+
+# With the answer delivered, have the model read the message back for anything
+# worth filing that the keyword rules did not catch — a rival named in passing,
+# a feature described rather than requested.
+unread = next(
+    (m for m in messages if m.get("agent") is not None and not m.get("model_read")),
+    None,
+)
+if unread is not None:
+    unread["model_read"] = True
+    extra = suggestions_from_model(
+        unread["user"],
+        get_agent(),
+        known_competitors={c["name"] for c in db.list_competitors()},
+        existing=unread.get("suggestions", []),
+    )
+    if extra:
+        unread["suggestions"] = merge_suggestions(unread.get("suggestions", []), extra)
+        st.rerun()

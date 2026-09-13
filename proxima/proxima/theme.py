@@ -18,7 +18,10 @@ Two rules worth keeping if you extend this:
 
 from __future__ import annotations
 
+import base64
 import html
+import pathlib
+from functools import lru_cache
 
 import streamlit as st
 
@@ -177,12 +180,22 @@ code, pre, kbd {
 }
 
 .px-eyebrow {
+  display: inline-flex;
+  align-items: center;
   font-family: var(--px-font-mono);
   font-size: 0.68rem;
   font-weight: 500;
   letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--px-faint);
+}
+
+/* The logo glyph, sized to the cap height of the eyebrow beside it. */
+.px-mark {
+  height: 26px;
+  width: auto;
+  margin-right: 12px;
+  flex: none;
 }
 
 .px-eyebrow .px-sep { color: var(--px-accent); margin: 0 8px; }
@@ -773,10 +786,24 @@ def inject() -> None:
 # feature names and competitor names come from user input.
 
 
-def hero(title: str, subtitle: str, eyebrow: str, stats, online: bool) -> None:
+@lru_cache(maxsize=4)
+def _data_uri(path: str) -> str:
+    """Inline an image. Streamlit serves no static files for raw HTML to link."""
+    try:
+        return "data:image/png;base64," + base64.b64encode(
+            pathlib.Path(path).read_bytes()
+        ).decode()
+    except OSError:
+        return ""
+
+
+def hero(
+    title: str, subtitle: str, eyebrow: str, stats, online: bool, mark: str = ""
+) -> None:
     """The masthead: eyebrow, wordmark, blurb, live status and counters.
 
-    ``stats`` is a sequence of (value, label) pairs.
+    ``stats`` is a sequence of (value, label) pairs. ``mark`` is a path to the
+    logo glyph, drawn beside the eyebrow.
     """
     state = "live" if online else "down"
     status_text = "Agent online" if online else "LLM offline · fallback"
@@ -784,6 +811,10 @@ def hero(title: str, subtitle: str, eyebrow: str, stats, online: bool) -> None:
     # The eyebrow reads "PROXIMA // SUBTITLE"; the separator gets the accent.
     parts = [html.escape(piece.strip()) for piece in eyebrow.split("//")]
     eyebrow_html = "<span class='px-sep'>//</span>".join(parts)
+
+    uri = _data_uri(mark) if mark else ""
+    if uri:
+        eyebrow_html = f"<img class='px-mark' src='{uri}' alt=''>" + eyebrow_html
 
     chips = "".join(
         f"<div class='px-chip'><b>{html.escape(str(value))}</b>"
