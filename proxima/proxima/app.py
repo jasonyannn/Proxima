@@ -4,7 +4,7 @@ import hashlib
 from datetime import datetime
 
 try:
-    from .agent import ProximaAgent
+    from .agent import ProximaAgent, detect_saveable
     from .database import DatabaseManager
     from .prompt import SYSTEM_PROMPT
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
@@ -13,7 +13,7 @@ try:
     from . import seed_data
     from . import theme, voice
 except ImportError:  # pragma: no cover
-    from agent import ProximaAgent
+    from agent import ProximaAgent, detect_saveable
     from database import DatabaseManager
     from prompt import SYSTEM_PROMPT
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
@@ -123,8 +123,163 @@ def submit_message() -> None:
         return
 
     chat = st.session_state.chats.get(st.session_state.current_chat_id)
-    if chat is not None:
-        chat["messages"].append({"user": text, "agent": None})
+    if chat is None:
+        return
+
+    # Worked out here, with the message: the save chips are on screen straight
+    # away, so the user can file a competitor while the answer is still coming.
+    known = {c["name"] for c in get_database().list_competitors()}
+    chat["messages"].append(
+        {
+            "user": text,
+            "agent": None,
+            "suggestions": detect_saveable(text, get_agent(), known),
+            "saved": [],
+        }
+    )
+
+
+LEVELS = ["High", "Medium", "Low"]
+FEATURE_STATUSES = ["Backlog", "Planned", "In Progress", "Shipped"]
+BUG_STATUSES = ["Open", "In Progress", "Closed"]
+SENTIMENTS = ["positive", "neutral", "negative"]
+
+
+def _level_index(value: str) -> int:
+    """Position of a High/Medium/Low value, defaulting to Medium."""
+    value = str(value or "").title()
+    return LEVELS.index(value) if value in LEVELS else 1
+
+
+def render_save_actions(item: dict, index: int) -> None:
+    """Offer what a message mentioned as a one-click save.
+
+    This is the only route into product memory: the agent answers, and filing
+    anything is the user's decision, taken here.
+    """
+    saved = item.get("saved", [])
+    pending_suggestions = [
+        s for s in item.get("suggestions", []) if s["label"] not in saved
+    ]
+
+    if saved:
+        st.caption(
+            "  ".join(
+                f"✓ Saved {label.split(':', 1)[1] or 'entry'} → {label.split(':', 1)[0].title()}s"
+                for label in saved
+            )
+        )
+
+    if not pending_suggestions:
+        return
+
+    base = f"{st.session_state.current_chat_id}_{index}"
+    # Leave the trailing space empty so two chips do not stretch across the page.
+    widths = [1] * len(pending_suggestions) + [max(1, 4 - len(pending_suggestions))]
+
+    for column, suggestion in zip(st.columns(widths), pending_suggestions):
+        kind = suggestion["kind"]
+        key = f"save_{base}_{suggestion['label']}"
+        with column:
+            if kind == "competitor":
+                _competitor_chip(item, suggestion, key)
+            elif kind == "feature":
+                _feature_chip(item, suggestion, key)
+            elif kind == "bug":
+                _bug_chip(item, suggestion, key)
+            else:
+                _feedback_chip(item, suggestion, key)
+
+
+def _confirm_saved(item: dict, suggestion: dict, message: str) -> None:
+    item.setdefault("saved", []).append(suggestion["label"])
+    st.session_state.save_toast = message
+    st.rerun()
+
+
+def _competitor_chip(item: dict, suggestion: dict, key: str) -> None:
+    with st.popover(f"＋ Competitor: {suggestion['name']}", use_container_width=True):
+        st.caption("Mentioned as a rival. Save it to the Competitors tab.")
+        name = st.text_input("Name", value=suggestion["name"], key=f"{key}_name")
+        website = st.text_input("Website", key=f"{key}_site")
+        positioning = st.text_area("Positioning", height=70, key=f"{key}_pos")
+        if st.button("Save competitor", key=f"{key}_go", type="primary") and name.strip():
+            db.upsert_competitor(
+                name=name.strip(),
+                website=website.strip() or None,
+                positioning=positioning.strip() or None,
+            )
+            _confirm_saved(item, suggestion, f"{name.strip()} saved to Competitors.")
+
+
+def _feature_chip(item: dict, suggestion: dict, key: str) -> None:
+    with st.popover("＋ Save as feature", use_container_width=True):
+        st.caption("Check the title before filing — it is read off your message.")
+        title = st.text_input("Title", value=suggestion.get("title", ""), key=f"{key}_title")
+        description = st.text_area(
+            "Description", value=suggestion.get("description", ""), height=80, key=f"{key}_desc"
+        )
+        left, mid, right = st.columns(3)
+        priority = left.selectbox(
+            "Priority", LEVELS, index=_level_index(suggestion.get("priority")), key=f"{key}_pri"
+        )
+        impact = mid.selectbox(
+            "Impact", LEVELS, index=_level_index(suggestion.get("impact")), key=f"{key}_imp"
+        )
+        effort = right.selectbox(
+            "Effort", LEVELS, index=_level_index(suggestion.get("effort")), key=f"{key}_eff"
+        )
+        status = st.selectbox("Status", FEATURE_STATUSES, key=f"{key}_status")
+        if st.button("Save feature", key=f"{key}_go", type="primary") and title.strip():
+            db.create_feature(
+                title=title.strip(),
+                description=description.strip() or None,
+                priority=priority,
+                impact=impact,
+                effort=effort,
+                status=status,
+            )
+            _confirm_saved(item, suggestion, f"“{title.strip()}” saved to Features.")
+
+
+def _bug_chip(item: dict, suggestion: dict, key: str) -> None:
+    with st.popover("＋ Save as bug", use_container_width=True):
+        title = st.text_input("Title", value=suggestion.get("title", ""), key=f"{key}_title")
+        description = st.text_area(
+            "Description", value=suggestion.get("description", ""), height=80, key=f"{key}_desc"
+        )
+        left, right = st.columns(2)
+        severity = left.selectbox(
+            "Severity", LEVELS, index=_level_index(suggestion.get("severity")), key=f"{key}_sev"
+        )
+        status = right.selectbox("Status", BUG_STATUSES, key=f"{key}_status")
+        if st.button("Save bug", key=f"{key}_go", type="primary") and title.strip():
+            db.create_bug(
+                title=title.strip(),
+                description=description.strip() or None,
+                severity=severity,
+                status=status,
+            )
+            _confirm_saved(item, suggestion, f"“{title.strip()}” saved to Bugs.")
+
+
+def _feedback_chip(item: dict, suggestion: dict, key: str) -> None:
+    with st.popover("＋ Save as feedback", use_container_width=True):
+        source = st.text_input("Source", value=suggestion.get("source", "customer"), key=f"{key}_src")
+        content = st.text_area(
+            "Content", value=suggestion.get("content", ""), height=80, key=f"{key}_content"
+        )
+        sentiment = st.selectbox(
+            "Sentiment",
+            SENTIMENTS,
+            index=SENTIMENTS.index(suggestion.get("sentiment", "neutral")),
+            key=f"{key}_sent",
+        )
+        if st.button("Save feedback", key=f"{key}_go", type="primary") and content.strip():
+            db.create_feedback(
+                source=source.strip() or None, content=content.strip(), sentiment=sentiment
+            )
+            _confirm_saved(item, suggestion, "Feedback saved.")
 
 
 # Languages the agent can be told to answer in. Ollama's llama3.2 handles these
@@ -331,8 +486,8 @@ theme.hero(
     online=llm_online(),
 )
 
-chat_tab, compare_tab, ip_tab = st.tabs(
-    ["Chat", "Competitor Comparison", "Copyright Analyser"]
+chat_tab, memory_tab, compare_tab, ip_tab = st.tabs(
+    ["Chat", "Features", "Competitor Comparison", "Copyright Analyser"]
 )
 
 
@@ -340,6 +495,11 @@ chat_tab, compare_tab, ip_tab = st.tabs(
 with chat_tab:
     current_chat = st.session_state.chats.get(st.session_state.current_chat_id, {})
     messages = current_chat.get("messages", [])
+
+    # Set by a save chip on the run before this one.
+    toast = st.session_state.pop("save_toast", None)
+    if toast:
+        st.toast(toast, icon="✅")
 
     # An exchange with agent=None is one whose question is already on screen but
     # whose reply has not been asked for yet. It keeps a slot in the transcript
@@ -357,6 +517,8 @@ with chat_tab:
                     pending[2].markdown("_Proxima is thinking..._")
                 else:
                     st.markdown(item["agent"])
+
+            render_save_actions(item, index)
     else:
         theme.empty_state(
             label="Session ready",
@@ -408,14 +570,100 @@ with chat_tab:
     # before the model is called, and the answer lands in the slot held above.
     if pending is not None:
         pending_index, pending_item, slot = pending
-        # The slot keeps showing its placeholder line for the whole call — a
-        # spinner drawn into it here would only blank it out until the reply
-        # arrives.
-        pending_item["agent"] = get_agent().generate_response(
-            pending_item["user"],
-            conversation_history=messages[:pending_index],
+        # Streamed into the slot as it is written, so a long analysis reads
+        # as progress rather than as a page that has hung.
+        written = ""
+        painted = 0
+        for piece in get_agent().stream_response(
+            pending_item["user"], conversation_history=messages[:pending_index]
+        ):
+            written += piece
+            # Repaint every few words, not every token — each update is a
+            # message to the browser.
+            if len(written) - painted >= 24:
+                painted = len(written)
+                slot.markdown(written + " ▍")
+
+        pending_item["agent"] = written
+        slot.markdown(written)
+
+
+
+# ------------------------------------------------------------- Features tab
+with memory_tab:
+    theme.section(
+        "Product memory",
+        note=(
+            "Everything you have filed from chat. Proxima never writes here on "
+            "its own — each entry got here because you saved it."
+        ),
+        index="01",
+    )
+
+    features = db.list_features()
+    bugs = db.list_bugs()
+    feedback_items = db.list_feedback()
+
+    theme.pills(
+        [
+            (f"{len(features)} features", "accent"),
+            (f"{len(bugs)} bugs", "warn" if bugs else ""),
+            (f"{len(feedback_items)} feedback", ""),
+        ]
+    )
+
+    if not features and not bugs and not feedback_items:
+        theme.empty_state(
+            label="Nothing filed yet",
+            title="Your backlog starts in the chat",
+            body=(
+                "Mention a feature, a bug or a rival and Proxima offers to file it "
+                "under the message. Nothing is saved until you say so. Try:"
+            ),
+            example="We've had 20 customers asking for dark mode.",
         )
-        slot.markdown(pending_item["agent"])
+
+    if features:
+        st.markdown("**Features**")
+        for feature in features:
+            with st.expander(f"**{feature['title']}** — {feature.get('status', '')}"):
+                st.write(feature.get("description") or "_No description on file._")
+                theme.pills(
+                    [
+                        (f"priority {feature.get('priority', '—')}", "accent"),
+                        (f"impact {feature.get('impact', '—')}", ""),
+                        (f"effort {feature.get('effort', '—')}", ""),
+                    ]
+                )
+                st.caption(f"Filed {feature.get('created_at', 'recently')}")
+                if st.button("Remove", key=f"del_feature_{feature['id']}"):
+                    db.delete_feature(feature["id"])
+                    st.rerun()
+
+    if bugs:
+        st.markdown("**Bugs**")
+        for bug in bugs:
+            with st.expander(f"**{bug['title']}** — {bug.get('status', '')}"):
+                st.write(bug.get("description") or "_No description on file._")
+                theme.pills([(f"severity {bug.get('severity', '—')}", "danger")])
+                st.caption(f"Filed {bug.get('created_at', 'recently')}")
+                if st.button("Remove", key=f"del_bug_{bug['id']}"):
+                    db.delete_bug(bug["id"])
+                    st.rerun()
+
+    if feedback_items:
+        st.markdown("**Feedback**")
+        for entry in feedback_items:
+            label = (entry.get("content") or "")[:60]
+            with st.expander(f"**{label}** — {entry.get('sentiment', '')}"):
+                st.write(entry.get("content") or "")
+                st.caption(
+                    f"From {entry.get('source') or 'unknown'} · "
+                    f"filed {entry.get('created_at', 'recently')}"
+                )
+                if st.button("Remove", key=f"del_feedback_{entry['id']}"):
+                    db.delete_feedback(entry["id"])
+                    st.rerun()
 
 
 # ------------------------------------------------- Competitor comparison tab

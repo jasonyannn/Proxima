@@ -124,6 +124,11 @@ class DatabaseManager:
             ).fetchall()
             return [dict(row) for row in rows]
 
+    def delete_feature(self, feature_id: int) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute("DELETE FROM feature WHERE id = ?", (feature_id,))
+            connection.commit()
+
     def create_bug(
         self,
         title: str,
@@ -148,6 +153,11 @@ class DatabaseManager:
                 "SELECT * FROM bug ORDER BY created_at DESC"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def delete_bug(self, bug_id: int) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute("DELETE FROM bug WHERE id = ?", (bug_id,))
+            connection.commit()
 
     def create_feedback(
         self,
@@ -174,6 +184,11 @@ class DatabaseManager:
             return [dict(row) for row in rows]
 
     # --- Competitors ---------------------------------------------------
+
+    def delete_feedback(self, feedback_id: int) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+            connection.commit()
 
     def upsert_competitor(
         self,
