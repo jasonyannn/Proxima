@@ -12,6 +12,7 @@ try:
     from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from .copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from .seed_data import seed
+    from .prompt_box import prompt_box
     from . import seed_data
     from . import theme, voice
 except ImportError:  # pragma: no cover
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover
     from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
     from copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
     from seed_data import seed
+    from prompt_box import prompt_box
     import seed_data
     import theme, voice
 
@@ -121,16 +123,46 @@ def delete_chat(chat_id: str) -> None:
         st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
 
 
-def submit_message() -> None:
-    """Queue whatever is in the box as an unanswered exchange.
+def handle_prompt_request(request: dict | None) -> None:
+    """Answer whatever the input asked for: a correction, a guess, or a send.
 
-    Runs as a widget callback — from Enter in the text box or from the Send
-    button — so it fires before the script reruns, and the question is on
-    screen from that very pass. The reply is generated further down, once the
-    page is painted.
+    The component raises a request, Streamlit re-runs, and the answer goes back
+    as a prop on the next render. Each request carries a nonce so a re-run for
+    an unrelated reason does not replay the last one.
     """
-    text = st.session_state.get("user_input", "").strip()
-    st.session_state.user_input = ""
+    if not isinstance(request, dict):
+        return
+
+    nonce = request.get("nonce")
+    if not nonce or nonce == st.session_state.get("box_nonce"):
+        return
+    st.session_state.box_nonce = nonce
+
+    kind = request.get("kind")
+    text = str(request.get("text", ""))
+
+    if kind == "submit":
+        queue_message(text)
+        # Clear the box by bumping the revision the component watches.
+        st.session_state.box_text = ""
+        st.session_state.box_revision = st.session_state.get("box_revision", 0) + 1
+        st.session_state.box_response = None
+        st.rerun()
+
+    if kind in {"polish", "predict"}:
+        agent = get_agent()
+        value = (
+            agent.polish_prompt(text)
+            if kind == "polish"
+            else agent.predict_continuation(text)
+        )
+        st.session_state.box_response = {"nonce": nonce, "kind": kind, "value": value}
+        st.rerun()
+
+
+def queue_message(text: str) -> None:
+    """Record a question with no answer yet, so it appears at once."""
+    text = text.strip()
     if not text:
         return
 
@@ -484,6 +516,19 @@ with st.sidebar:
         "this is recall, not training."
     )
 
+    st.toggle(
+        "Prompt assist",
+        value=st.session_state.get("setting_assist", True),
+        key="setting_assist",
+        help="Corrects and predicts as you type, before anything is sent.",
+    )
+    st.caption(
+        "A moment after you stop typing, your message is tidied up — spelling, "
+        "grammar, punctuation — and the next few words are offered in grey; "
+        "press Tab to take them. It runs on the local model, so it costs "
+        "nothing and never leaves this machine. Undo is always one click away."
+    )
+
 theme.hero(
     title="Product Management Agent",
     subtitle="Turn customer feedback into structured product decisions.",
@@ -543,34 +588,34 @@ with chat_tab:
         )
 
     st.divider()
-    input_col, mic_col, send_col = st.columns([5, 1, 1])
+    input_col, mic_col = st.columns([6, 1])
 
-    # The mic renders first so a transcript can be written into the text box
-    # before that widget is created further down.
+    # The mic renders first so a transcript can be pushed into the box before
+    # the input itself is drawn.
     with mic_col:
         spoken = capture_speech()
 
     if spoken:
-        st.session_state.user_input = spoken
+        st.session_state.box_text = spoken
+        st.session_state.box_revision = st.session_state.get("box_revision", 0) + 1
         st.rerun()
 
     with input_col:
-        # on_change fires when the box is committed — which is what Enter does.
-        st.text_input(
-            "Message Proxima",
+        # The input owns its own textarea (see prompt_box.py): Streamlit's does
+        # not report keystrokes, and correcting text before it is sent needs
+        # them. Enter sends, Shift+Enter starts a new line.
+        request = prompt_box(
+            value=st.session_state.get("box_text", ""),
+            revision=st.session_state.get("box_revision", 0),
             placeholder="Customers keep asking for dark mode...",
-            key="user_input",
-            label_visibility="collapsed",
-            on_change=submit_message,
+            assist=st.session_state.get("setting_assist", True),
+            # While an answer is generating, a rerun would restart it — so the
+            # box stops asking for help until the reply has landed.
+            busy=pending is not None,
+            response=st.session_state.get("box_response"),
         )
 
-    with send_col:
-        st.button(
-            "Send",
-            use_container_width=True,
-            type="primary",
-            on_click=submit_message,
-        )
+    handle_prompt_request(request)
 
     with st.expander("Example prompts"):
         st.code(

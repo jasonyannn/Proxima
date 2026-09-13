@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* The component renders in its own iframe, so the app's theme does not reach
+     it. These values mirror the tokens in theme.py. */
+  :root {
+    --bg: #0D0F13;
+    --surface: #121620;
+    --line: #242A36;
+    --text: #E9ECF1;
+    --dim: #98A1B0;
+    --faint: #626B7B;
+    --accent: #4D7CFE;
+    --accent-hi: #7CA0FF;
+    --volt: #C8F94C;
+    --font: 'Inter', system-ui, -apple-system, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: var(--font);
+    color: var(--text);
+    overflow: hidden;
+  }
+
+  .shell {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--bg);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .shell.focused {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(77, 124, 254, 0.14);
+  }
+
+  /* The textarea sits on top of a mirror that draws the prediction. Both use
+     identical metrics so the ghost text lands exactly where typing would. */
+  .stack { position: relative; }
+
+  .mirror, textarea {
+    font-family: var(--font);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    padding: 11px 13px;
+    border: 0;
+    margin: 0;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+    word-break: break-word;
+  }
+
+  .mirror {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    color: transparent;          /* only the ghost half is ever visible */
+  }
+
+  .mirror .ghost { color: var(--faint); }
+
+  textarea {
+    position: relative;
+    display: block;
+    width: 100%;
+    min-height: 44px;
+    max-height: 220px;
+    resize: none;
+    background: transparent;
+    color: var(--text);
+    outline: none;
+    overflow-y: auto;
+  }
+
+  textarea::placeholder { color: var(--faint); }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 9px 8px 13px;
+    border-top: 1px solid var(--line);
+    min-height: 42px;
+  }
+
+  .status {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .status .msg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .status.on .msg { color: var(--volt); }
+
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: var(--accent-hi);
+    cursor: pointer;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    flex: none;
+  }
+
+  .link:hover { text-decoration: underline; }
+
+  .send {
+    flex: none;
+    border: 0;
+    border-radius: 7px;
+    padding: 8px 20px;
+    font-family: var(--font);
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #07090F;
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    box-shadow: 0 6px 18px -8px rgba(77, 124, 254, 0.85);
+    cursor: pointer;
+    transition: filter 0.15s ease, transform 0.1s ease;
+  }
+
+  .send:hover:not(:disabled) { filter: brightness(1.07); }
+  .send:active:not(:disabled) { transform: translateY(1px); }
+  .send:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+
+  /* A quiet pulse while the local model is thinking about the text. */
+  .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex: none;
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+
+  @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+
+  kbd {
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+  <div class="stack">
+    <div class="mirror" id="mirror"><span id="typed"></span><span class="ghost" id="ghost"></span></div>
+    <textarea id="box" rows="1" spellcheck="true" aria-label="Message Proxima"></textarea>
+  </div>
+  <div class="bar">
+    <div class="status" id="status">
+      <span class="msg" id="statusMsg"></span>
+      <button class="link" id="undo" hidden>undo</button>
+    </div>
+    <button class="send" id="send" disabled>Send</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Streamlit component protocol (hand-rolled; no build step needed) ----
+  function post(type, payload) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, payload), "*");
+  }
+
+  function setValue(value) {
+    post("streamlit:setComponentValue", { value: value, dataType: "json" });
+  }
+
+  let lastHeight = 0;
+  function syncHeight() {
+    const h = Math.ceil(document.getElementById("shell").getBoundingClientRect().height) + 4;
+    if (h !== lastHeight) {
+      lastHeight = h;
+      post("streamlit:setFrameHeight", { height: h });
+    }
+  }
+
+  // ---- elements ----
+  const box = document.getElementById("box");
+  const mirror = document.getElementById("mirror");
+  const typed = document.getElementById("typed");
+  const ghost = document.getElementById("ghost");
+  const shell = document.getElementById("shell");
+  const statusEl = document.getElementById("status");
+  const statusMsg = document.getElementById("statusMsg");
+  const undoBtn = document.getElementById("undo");
+  const sendBtn = document.getElementById("send");
+
+  // ---- state ----
+  let props = { assist: true, busy: false, revision: -1, placeholder: "" };
+  let prediction = "";          // the greyed-out suffix currently offered
+  let beforePolish = null;      // text as it was before a correction landed
+  let skipPolishFor = "";       // text the user undid; do not correct it again
+  let nonce = 0;
+  let inflight = { polish: null, predict: null };   // text at time of request
+  let predictTimer = null, polishTimer = null;
+
+  const PREDICT_AFTER = 600;    // ms of stillness before guessing ahead
+  const POLISH_AFTER = 1500;    // ms of stillness before correcting
+
+  function request(kind, text) {
+    nonce += 1;
+    inflight[kind] = text;
+    setValue({ kind: kind, text: text, nonce: nonce });
+  }
+
+  function say(message, lit) {
+    statusMsg.textContent = message || "";
+    statusEl.classList.toggle("on", Boolean(lit));
+    syncHeight();
+  }
+
+  function showThinking(on) {
+    const existing = statusEl.querySelector(".dot");
+    if (on && !existing) statusEl.insertBefore(
+      Object.assign(document.createElement("span"), { className: "dot" }), statusEl.firstChild);
+    if (!on && existing) existing.remove();
+  }
+
+  function renderGhost() {
+    // The mirror repeats the typed text (invisible) so the ghost starts exactly
+    // where the caret is.
+    typed.textContent = box.value;
+    ghost.textContent = prediction;
+    syncHeight();
+  }
+
+  function clearPrediction() {
+    if (!prediction) return;
+    prediction = "";
+    renderGhost();
+  }
+
+  function autoGrow() {
+    box.style.height = "auto";
+    box.style.height = Math.min(box.scrollHeight, 220) + "px";
+    syncHeight();
+  }
+
+  function acceptPrediction() {
+    if (!prediction) return false;
+    box.value = box.value + prediction;
+    prediction = "";
+    box.selectionStart = box.selectionEnd = box.value.length;
+    renderGhost();
+    autoGrow();
+    scheduleWork();
+    return true;
+  }
+
+  function submit() {
+    const text = box.value.trim();
+    if (!text) return;
+    clearTimers();
+    clearPrediction();
+    box.value = "";
+    beforePolish = null;
+    say("");
+    autoGrow();
+    sendBtn.disabled = true;
+    nonce += 1;
+    setValue({ kind: "submit", text: text, nonce: nonce });
+  }
+
+  function clearTimers() {
+    clearTimeout(predictTimer);
+    clearTimeout(polishTimer);
+  }
+
+  function scheduleWork() {
+    clearTimers();
+    sendBtn.disabled = !box.value.trim();
+    if (!props.assist || props.busy) return;
+
+    const text = box.value;
+    if (text.trim().length >= 8) {
+      predictTimer = setTimeout(function () {
+        if (box.value === text && !prediction) request("predict", text);
+      }, PREDICT_AFTER);
+    }
+    if (text.trim().length >= 12 && text !== skipPolishFor) {
+      polishTimer = setTimeout(function () {
+        if (box.value !== text) return;
+        showThinking(true);
+        request("polish", text);
+      }, POLISH_AFTER);
+    }
+  }
+
+  // ---- typing ----
+  box.addEventListener("input", function () {
+    clearPrediction();
+    beforePolish = null;
+    undoBtn.hidden = true;
+    say("");
+    autoGrow();
+    scheduleWork();
+  });
+
+  box.addEventListener("keydown", function (event) {
+    if (event.key === "Tab" && prediction) {
+      event.preventDefault();
+      acceptPrediction();
+      return;
+    }
+    if (event.key === "Escape") {
+      clearPrediction();
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      // Enter on an offered prediction sends what is actually written, not the
+      // guess — accepting is always deliberate.
+      submit();
+    }
+  });
+
+  box.addEventListener("focus", function () { shell.classList.add("focused"); });
+  box.addEventListener("blur", function () {
+    shell.classList.remove("focused");
+    clearPrediction();
+  });
+
+  sendBtn.addEventListener("click", submit);
+
+  undoBtn.addEventListener("click", function () {
+    if (beforePolish === null) return;
+    skipPolishFor = beforePolish;
+    box.value = beforePolish;
+    beforePolish = null;
+    undoBtn.hidden = true;
+    say("");
+    renderGhost();
+    autoGrow();
+    box.focus();
+  });
+
+  // ---- answers from Python ----
+  function applyResponse(response) {
+    if (!response || !response.kind) return;
+
+    if (response.kind === "predict") {
+      showThinking(false);
+      // Only offer a guess for exactly the text it was asked about.
+      if (inflight.predict === box.value && response.value) {
+        prediction = String(response.value);
+        renderGhost();
+        say("Tab to accept", false);
+      }
+      inflight.predict = null;
+      return;
+    }
+
+    if (response.kind === "polish") {
+      showThinking(false);
+      const asked = inflight.polish;
+      inflight.polish = null;
+      const fixed = String(response.value || "");
+      // Drop it if the user kept typing, or if nothing actually changed.
+      if (asked !== box.value || !fixed || fixed === box.value) {
+        say("");
+        return;
+      }
+      beforePolish = box.value;
+      box.value = fixed;
+      renderGhost();
+      autoGrow();
+      undoBtn.hidden = false;
+      say("✨ corrected", true);
+    }
+  }
+
+  // ---- render loop ----
+  let lastResponseNonce = null;
+  window.addEventListener("message", function (event) {
+    if (!event.data || event.data.type !== "streamlit:render") return;
+    const args = event.data.args || {};
+
+    props.assist = args.assist !== false;
+    props.busy = Boolean(args.busy);
+    box.placeholder = args.placeholder || "";
+
+    // The server overwrites the box only when it says so — after a send, or
+    // when a voice transcript arrives — never while you are mid-sentence.
+    if (typeof args.revision === "number" && args.revision !== props.revision) {
+      props.revision = args.revision;
+      box.value = args.value || "";
+      prediction = "";
+      beforePolish = null;
+      undoBtn.hidden = true;
+      say("");
+      renderGhost();
+      autoGrow();
+    }
+
+    const response = args.response || {};
+    if (response.nonce && response.nonce !== lastResponseNonce) {
+      lastResponseNonce = response.nonce;
+      applyResponse(response);
+    }
+
+    sendBtn.disabled = !box.value.trim();
+    syncHeight();
+  });
+
+  post("streamlit:componentReady", { apiVersion: 1 });
+  autoGrow();
+  syncHeight();
+  setTimeout(function () { box.focus(); }, 60);
+  window.addEventListener("resize", syncHeight);
+})();
+</script>
+</body>
+</html>
