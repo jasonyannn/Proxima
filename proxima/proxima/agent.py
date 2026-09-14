@@ -177,6 +177,321 @@ class ProximaAgent:
 
         return f"{self.system_prompt}{conversation_text}\n\nUser: {user_input}\n\nAssistant:"
 
+    def research_competitor(self, name: str, limit: int = 10) -> list[dict[str, str]]:
+        """What the model remembers of a rival's feature set.
+
+        This is recall, not research: the model has no browser and no access to
+        the company's site, so the list is what a well-read person would say
+        from memory — roughly right about a well-known product, capable of
+        being wrong or out of date about any of it. Everything it produces is
+        labelled as recalled wherever it is shown, and the analysers treat it
+        as a starting point to correct, not a source of truth.
+        """
+        instruction = (
+            f"List the main product features of {name}, the software product, "
+            "as a product manager would describe them for a competitive "
+            "comparison.\n\n"
+            'Return ONLY JSON: {"features": [{"name": "...", "category": "...", '
+            '"description": "..."}]}\n\n'
+            "Rules:\n"
+            f"- At most {limit} features, the ones {name} is best known for.\n"
+            "- name: 2-5 words, the capability itself, not marketing copy.\n"
+            "- category: one or two words, e.g. Payments, Storefront, "
+            "Analytics, Shipping.\n"
+            "- description: one sentence on what it does for the user.\n"
+            "- Only features you are confident this product actually has. If "
+            "you do not recognise the product, return an empty list.\n\nJSON:"
+        )
+
+        try:
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": instruction,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.1, "num_predict": 900},
+                },
+                timeout=(10, 120),
+            )
+            response.raise_for_status()
+            parsed = json.loads(response.json().get("response", ""))
+        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError):
+            return []
+
+        rows = parsed.get("features") if isinstance(parsed, dict) else None
+        if not isinstance(rows, list):
+            return []
+
+        features: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for row in rows[:limit]:
+            if isinstance(row, str):
+                row = {"name": row}
+            if not isinstance(row, dict):
+                continue
+            title = " ".join(str(row.get("name") or "").split())[:80]
+            if not title or title.lower() in seen:
+                continue
+            seen.add(title.lower())
+            features.append(
+                {
+                    "name": title,
+                    "category": " ".join(str(row.get("category") or "").split())[:40],
+                    "description": " ".join(str(row.get("description") or "").split())[:400],
+                }
+            )
+        return features
+
+    def profile_product(self, conversation: list[dict], limit: int = 10) -> dict[str, Any]:
+        """Read the whole chat and describe the product being discussed.
+
+        One pass over the conversation, rather than message by message: what a
+        product is only becomes clear across several turns, and the features
+        worth filing are usually spread over all of them.
+        """
+        transcript = "\n".join(
+            f"User: {msg.get('user', '')}" for msg in conversation[-8:] if msg.get("user")
+        )
+        if not transcript.strip():
+            return {}
+
+        instruction = (
+            "Below is what someone told an assistant about the product they are "
+            "building. Describe that product.\n\n"
+            'Return ONLY JSON: {"summary": "...", "features": [{"title": "...", '
+            '"description": "..."}]}\n\n'
+            "Rules:\n"
+            "- summary: one sentence describing their product.\n"
+            f"- features: at most {limit} capabilities THEIR product has or is "
+            "meant to have, taken from what they wrote. Title of 2-5 words.\n"
+            "- Never list a competitor's features here, only theirs.\n"
+            "- If they described no product, return empty values.\n\n"
+            f"Conversation:\n{transcript}\n\nJSON:"
+        )
+
+        try:
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": instruction,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.1, "num_predict": 800},
+                },
+                timeout=(10, 120),
+            )
+            response.raise_for_status()
+            parsed = json.loads(response.json().get("response", ""))
+        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError):
+            return {}
+
+        if not isinstance(parsed, dict):
+            return {}
+
+        features = []
+        seen: set[str] = set()
+        for row in (parsed.get("features") or [])[:limit]:
+            if isinstance(row, str):
+                row = {"title": row}
+            if not isinstance(row, dict):
+                continue
+            title = " ".join(str(row.get("title") or "").split())[:80]
+            if not title or title.lower() in seen or not _plausible_title(title):
+                continue
+            seen.add(title.lower())
+            features.append(
+                {
+                    "title": title,
+                    "description": " ".join(str(row.get("description") or "").split())[:400],
+                }
+            )
+
+        return {
+            "summary": " ".join(str(parsed.get("summary") or "").split())[:300],
+            "features": features,
+        }
+
+    def competitors_in_conversation(self, conversation: list[dict], limit: int = 6) -> list[dict[str, str]]:
+        """Every rival named anywhere in a chat, read in one pass.
+
+        Per-message extraction misses the ones mentioned before the chat made
+        it clear what the product even was, and re-offers ones already dealt
+        with. Reading the whole transcript at once catches both.
+        """
+        transcript = "\n".join(
+            f"- {msg.get('user', '')}" for msg in conversation[-12:] if msg.get("user")
+        )
+        if not transcript.strip():
+            return []
+
+        instruction = (
+            "Below is what someone told an assistant while working on their "
+            "product. List every existing company or product they named.\n\n"
+            'Return ONLY JSON: {"competitors": [{"name": "...", "positioning": "..."}]}\n\n'
+            "Rules:\n"
+            f"- At most {limit}. Use the proper brand spelling.\n"
+            "- positioning: a short phrase for what that company is.\n"
+            "- A product they compare themselves to counts, however they phrase "
+            "it: \"the new Shopify\", \"like Airbnb but for parking\", \"an Uber "
+            "for laundry\", \"similar to Notion\" — Shopify, Airbnb, Uber and "
+            "Notion are all competitors here. So does one they say they are "
+            "worried about, or want to take customers from.\n"
+            "- Their own product is usually unnamed, or is the thing being "
+            "built. Do not invent a name for it, and do not list it.\n"
+            "- Only names that actually appear in the text. Never invent one.\n\n"
+            f"Notes:\n{transcript}\n\nJSON:"
+        )
+        rows = self._json_list(instruction, "competitors", limit)
+
+        # The keyword rules are narrower but never hesitate: they catch the
+        # "compared with X" phrasings whatever the model decides to make of
+        # them. Cheap insurance against a shy answer.
+        for name in detect_competitors(transcript):
+            if not any(str(r.get("name", "")).lower() == name.lower() for r in rows):
+                rows.append({"name": name, "positioning": ""})
+
+        # Only names the chat really contains: the model will otherwise round a
+        # marketplace up to Amazon.
+        haystack = transcript.lower()
+        found = []
+        for row in rows:
+            name = " ".join(str(row.get("name") or "").split())[:80]
+            if name and name.lower() in haystack:
+                found.append(
+                    {
+                        "name": name,
+                        "positioning": " ".join(str(row.get("positioning") or "").split())[:200],
+                    }
+                )
+        return found
+
+    def suggest_rivals(
+        self, summary: str, exclude: set[str] | None = None, limit: int = 6
+    ) -> list[dict[str, str]]:
+        """Rivals the chat never mentioned, for the ones you have not thought of.
+
+        The opposite job to the scan above: here the model is asked to go
+        beyond the text, so nothing it says can be checked against the chat.
+        Everything comes back as a proposal to accept or ignore.
+        """
+        summary = " ".join(str(summary or "").split())
+        if len(summary) < 12:
+            return []
+
+        skip = ", ".join(sorted(exclude or set())) or "none"
+        instruction = (
+            f"A product is described as: {summary}\n\n"
+            "Name the real, existing products that compete with it most "
+            "directly — the ones its team should be watching.\n\n"
+            'Return ONLY JSON: {"competitors": [{"name": "...", "positioning": '
+            '"...", "why": "..."}]}\n\n'
+            "Rules:\n"
+            f"- At most {limit}, most relevant first.\n"
+            f"- Do not include any of these, they are already known: {skip}.\n"
+            "- Only products that genuinely exist. If you are not confident a "
+            "name is real, leave it out.\n"
+            "- why: one short phrase on why they compete.\n\nJSON:"
+        )
+        rows = self._json_list(instruction, "competitors", limit)
+
+        skip_lower = {name.lower() for name in (exclude or set())}
+        out = []
+        seen: set[str] = set()
+        for row in rows:
+            name = " ".join(str(row.get("name") or "").split())[:80]
+            key = name.lower()
+            if not name or key in skip_lower or key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "name": name,
+                    "positioning": " ".join(str(row.get("positioning") or "").split())[:200],
+                    "why": " ".join(str(row.get("why") or "").split())[:200],
+                }
+            )
+        return out
+
+    def _json_list(self, instruction: str, key: str, limit: int) -> list[dict]:
+        """Run a JSON-constrained prompt and return one list from the result."""
+        try:
+            response = requests.post(
+                f"{self.ollama_host}/api/generate",
+                json={
+                    "model": self.model,
+                    "prompt": instruction,
+                    "stream": False,
+                    "format": "json",
+                    "options": {"temperature": 0.1, "num_predict": 700},
+                },
+                timeout=(10, 120),
+            )
+            response.raise_for_status()
+            parsed = json.loads(response.json().get("response", ""))
+        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError):
+            return []
+
+        rows = parsed.get(key) if isinstance(parsed, dict) else None
+        if not isinstance(rows, list):
+            return []
+        return [
+            {"name": row} if isinstance(row, str) else row
+            for row in rows[:limit]
+            if isinstance(row, (str, dict))
+        ]
+
+    def suggest_tickets(self, conversation: list[dict], limit: int = 8) -> list[dict[str, Any]]:
+        """Work items implied by a conversation.
+
+        A feature is what the product does; a ticket is a piece of work someone
+        picks up. The chat usually contains both — "sign-out fails on refresh"
+        is a ticket, "sellers design their own shop" is a feature — so this
+        looks only for the second kind.
+        """
+        transcript = "\n".join(
+            f"- {msg.get('user', '')}" for msg in conversation[-10:] if msg.get("user")
+        )
+        if not transcript.strip():
+            return []
+
+        instruction = (
+            "Below is what someone said while working on their product. List "
+            "the pieces of work this implies — the things a team would put on "
+            "a board and pick up.\n\n"
+            'Return ONLY JSON: {"tickets": [{"title": "...", "description": '
+            '"...", "priority": "High|Medium|Low", "kind": "Bug|Feature|Chore"}]}\n\n'
+            "Rules:\n"
+            f"- At most {limit}, most valuable first.\n"
+            "- title: an imperative of 3-8 words — \"Fix sign-out after refresh\", "
+            "\"Add bulk CSV export\".\n"
+            "- description: one or two sentences on what doing it involves.\n"
+            "- Only work the text actually calls for. Do not pad the list with "
+            "generic project tasks nobody mentioned.\n"
+            "- If nothing needs doing, return an empty list.\n\n"
+            f"Notes:\n{transcript}\n\nJSON:"
+        )
+
+        tickets = []
+        seen: set[str] = set()
+        for row in self._json_list(instruction, "tickets", limit):
+            title = " ".join(str(row.get("title") or "").split())[:120]
+            if not title or title.lower() in seen:
+                continue
+            seen.add(title.lower())
+            priority = str(row.get("priority") or "Medium").title()
+            tickets.append(
+                {
+                    "title": title,
+                    "description": " ".join(str(row.get("description") or "").split())[:500],
+                    "priority": priority if priority in {"High", "Medium", "Low"} else "Medium",
+                    "kind": str(row.get("kind") or "").title(),
+                }
+            )
+        return tickets
+
     def polish_prompt(self, text: str) -> str:
         """Tidy a half-written message: spelling, grammar, punctuation.
 

@@ -9,22 +9,30 @@ try:
     from .agent import ProximaAgent, detect_saveable, suggestions_from_model
     from .database import DatabaseManager
     from .prompt import SYSTEM_PROMPT
-    from .competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
-    from .copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
-    from .seed_data import seed
+    from .competitors import (
+        CompetitorAnalyzer,
+        STATUS_MATCH,
+        STATUS_PARTIAL,
+        STATUS_UNKNOWN,
+    )
+    from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from .prompt_box import prompt_box
-    from . import seed_data
-    from . import theme, voice
+    from .kanban import kanban
+    from . import theme, voice, workspace, landing
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
     from prompt import SYSTEM_PROMPT
-    from competitors import CompetitorAnalyzer, STATUS_MATCH, STATUS_PARTIAL
-    from copyright_analyzer import CopyrightAnalyzer, DISCLAIMER
-    from seed_data import seed
+    from competitors import (
+        CompetitorAnalyzer,
+        STATUS_MATCH,
+        STATUS_PARTIAL,
+        STATUS_UNKNOWN,
+    )
+    from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from prompt_box import prompt_box
-    import seed_data
-    import theme, voice
+    from kanban import kanban
+    import theme, voice, workspace, landing
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -47,17 +55,34 @@ st.logo(LOGO, icon_image=LOGO_MARK, size="large")
 
 theme.inject()
 
+# Nothing below this point renders until someone is signed in: chats, and the
+# workspaces hanging off them, belong to an account.
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if st.session_state.user is None:
+    signed_in = landing.render(LOGO_MARK)
+    if signed_in:
+        st.session_state.user = signed_in
+        st.rerun()
+    st.stop()
+
+USER = st.session_state.user
+
 
 @st.cache_resource
-def get_database() -> DatabaseManager:
-    db = DatabaseManager()
-    db.init_db()
-    return db
+def get_database(chat_id: str, owner: int) -> DatabaseManager:
+    """The open chat's own product memory — see workspace.py for why."""
+    return workspace.database_for(chat_id, owner)
+
+
+def current_db() -> DatabaseManager:
+    return get_database(st.session_state.current_chat_id, USER["id"])
 
 
 def get_agent() -> ProximaAgent:
     return ProximaAgent(
-        database=get_database(),
+        database=current_db(),
         # Rebuilt per call so a settings change takes effect on the next message.
         system_prompt=tuned_system_prompt(),
         ollama_host=OLLAMA_HOST,
@@ -77,15 +102,19 @@ def llm_online() -> bool:
         return False
 
 
-db = get_database()
-competitor_analyzer = CompetitorAnalyzer(db)
-ip_analyzer = CopyrightAnalyzer(db)
-
-STATUS_ICON = {STATUS_MATCH: "✅", STATUS_PARTIAL: "🟡", "Gap": "❌"}
+STATUS_ICON = {STATUS_MATCH: "✅", STATUS_PARTIAL: "🟡", "Gap": "❌", STATUS_UNKNOWN: "·"}
 RISK_COLOR = {"Low": "🟢", "Moderate": "🟡", "Elevated": "🟠", "High": "🔴"}
 THREAT_COLOR = {"Low": "🟢", "Moderate": "🟡", "High": "🔴"}
 # Threat and risk levels map onto the pill tones in the theme.
-RISK_TONE = {"Low": "ok", "Moderate": "warn", "Elevated": "warn", "High": "danger"}
+STATUS_DOT = {"High": "🔴", "Moderate": "🟠", "Low": "🟡", "Info": "🔵"}
+
+RISK_TONE = {
+    "Low": "ok",
+    "Moderate": "warn",
+    "Elevated": "warn",
+    "High": "danger",
+    "Unknown": "",
+}
 
 def chat_title(chat_id: str) -> str:
     """Display name for a chat: an explicit title, else its opening line."""
@@ -111,16 +140,30 @@ def new_chat() -> str:
         "ordinal": st.session_state.chat_counter,
     }
     st.session_state.current_chat_id = chat_id
+    remember_sessions()
     return chat_id
 
 
 def delete_chat(chat_id: str) -> None:
-    """Remove a chat, moving the selection to whatever is left."""
+    """Remove a chat, its workspace, and everything filed in it."""
     st.session_state.chats.pop(chat_id, None)
+    get_database.clear()
+    workspace.discard(chat_id, USER["id"])
     if st.session_state.current_chat_id == chat_id:
         # next() on an empty dict returns None, which the Chat tab treats as
         # "no session" and replaces with a fresh one.
         st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
+    remember_sessions()
+
+
+def remember_sessions() -> None:
+    """Persist the chats. A workspace outlives the session that opened it, so
+    the chat it belongs to has to outlive it too."""
+    workspace.save_sessions(
+        st.session_state.get("chats", {}),
+        st.session_state.get("chat_counter", 0),
+        USER["id"],
+    )
 
 
 def handle_prompt_request(request: dict | None) -> None:
@@ -172,7 +215,7 @@ def queue_message(text: str) -> None:
 
     # Worked out here, with the message: the save chips are on screen straight
     # away, so the user can file a competitor while the answer is still coming.
-    known = {c["name"] for c in get_database().list_competitors()}
+    known = {c["name"] for c in current_db().list_competitors()}
     chat["messages"].append(
         {
             "user": text,
@@ -182,6 +225,10 @@ def queue_message(text: str) -> None:
         }
     )
 
+
+# Stamped on rival features that came from the model's memory rather than from
+# anyone checking the competitor's product.
+RECALLED = "model-recall"
 
 LEVELS = ["High", "Medium", "Low"]
 FEATURE_STATUSES = ["Backlog", "Planned", "In Progress", "Shipped"]
@@ -238,13 +285,17 @@ def save_suggestion(item: dict, suggestion: dict) -> None:
     kind = suggestion["kind"]
 
     if kind == "competitor":
-        row_id = db.upsert_competitor(
+        row_id = current_db().upsert_competitor(
             name=suggestion["name"],
             positioning=suggestion.get("positioning") or None,
         )
         what, where = suggestion["name"], "Competitors"
+        # A competitor with no features is a name in a list: the comparison has
+        # nothing to match against and reports 0% overlap. Ask for what the
+        # model knows of their product, so the tab means something on arrival.
+        st.session_state.research_queue = suggestion["name"]
     elif kind == "feature":
-        row_id = db.create_feature(
+        row_id = current_db().create_feature(
             title=suggestion["title"],
             description=suggestion.get("description") or None,
             priority=str(suggestion.get("priority", "Medium")).title(),
@@ -254,7 +305,7 @@ def save_suggestion(item: dict, suggestion: dict) -> None:
         )
         what, where = suggestion["title"], "Features"
     elif kind == "bug":
-        row_id = db.create_bug(
+        row_id = current_db().create_bug(
             title=suggestion["title"],
             description=suggestion.get("description") or None,
             severity=str(suggestion.get("severity", "Medium")).title(),
@@ -262,7 +313,7 @@ def save_suggestion(item: dict, suggestion: dict) -> None:
         )
         what, where = suggestion["title"], "Bugs"
     else:
-        row_id = db.create_feedback(
+        row_id = current_db().create_feedback(
             source=suggestion.get("source") or None,
             content=suggestion.get("content", ""),
             sentiment=suggestion.get("sentiment", "neutral"),
@@ -278,14 +329,67 @@ def save_suggestion(item: dict, suggestion: dict) -> None:
 def undo_save(item: dict, entry: dict) -> None:
     """Take back a save. The chip returns, so it can be filed again."""
     remove = {
-        "competitor": db.delete_competitor,
-        "feature": db.delete_feature,
-        "bug": db.delete_bug,
-        "feedback": db.delete_feedback,
+        "competitor": current_db().delete_competitor,
+        "feature": current_db().delete_feature,
+        "bug": current_db().delete_bug,
+        "feedback": current_db().delete_feedback,
     }[entry["kind"]]
     remove(entry["id"])
     item["saved"] = [e for e in item.get("saved", []) if e["label"] != entry["label"]]
     st.session_state.save_toast = f"Removed {_shorten(entry['what'], 40)}."
+
+
+def run_research(name: str) -> int:
+    """Fill in a competitor's feature list from what the model knows.
+
+    Recalled, not researched — the model has no browser. Every row is marked
+    as such where it is shown, and is there to be corrected rather than
+    trusted.
+    """
+    store = current_db()
+    competitor = next(
+        (c for c in store.list_competitors() if c["name"].lower() == name.lower()), None
+    )
+    if competitor is None:
+        return 0
+
+    existing = {
+        f["name"].lower()
+        for f in store.list_competitor_features(competitor_id=competitor["id"])
+    }
+    added = 0
+    for feature in get_agent().research_competitor(name):
+        if feature["name"].lower() in existing:
+            continue
+        store.create_competitor_feature(
+            competitor_id=competitor["id"],
+            name=feature["name"],
+            description=feature["description"] or None,
+            category=feature["category"] or None,
+            source_url=RECALLED,
+        )
+        added += 1
+    return added
+
+
+def file_product_features(profile: dict) -> int:
+    """File the features a chat described for the user's own product."""
+    store = current_db()
+    existing = {f["title"].lower() for f in store.list_features()}
+    added = 0
+    for feature in profile.get("features", []):
+        if feature["title"].lower() in existing:
+            continue
+        store.create_feature(
+            title=feature["title"],
+            description=feature.get("description") or None,
+            priority="Medium",
+            impact="Medium",
+            effort="Medium",
+            status="Backlog",
+        )
+        added += 1
+    return added
 
 
 def render_save_actions(item: dict, index: int) -> None:
@@ -418,18 +522,47 @@ def capture_speech():
 
 # Initialize session state
 if "chats" not in st.session_state:
-    st.session_state.chats = {}
+    # Chats live on disk, because the workspace each one owns does.
+    restored, counter = workspace.load_sessions(USER["id"])
+    st.session_state.chats = restored
+    st.session_state.chat_counter = counter
+
+    # Everything filed before accounts and workspaces existed goes to the first
+    # account to sign in — whoever was using this machine already. Claiming it
+    # is one-time: the next account starts empty rather than inheriting it.
+    if workspace.LEGACY_ID not in restored and workspace.claim_legacy(USER["id"]):
+        st.session_state.chats[workspace.LEGACY_ID] = {
+            "messages": [],
+            "created": datetime.now(),
+            "title": workspace.LEGACY_TITLE,
+            "ordinal": 0,
+        }
 
 if "current_chat_id" not in st.session_state:
-    st.session_state.current_chat_id = None
+    st.session_state.current_chat_id = next(iter(st.session_state.chats), None)
 
 # Guarantee exactly one live chat before anything renders: the sidebar lists
 # sessions and the Chat tab reads the current one, so neither can be first.
 if not st.session_state.chats or st.session_state.current_chat_id is None:
     new_chat()
 
+# Everything below reads the open chat's workspace, never a shared one.
+db = current_db()
+competitor_analyzer = CompetitorAnalyzer(db)
+ip_analyzer = CopyrightAnalyzer(db)
+
 # Sidebar for chat management
 with st.sidebar:
+    who, out = st.columns([3, 1], gap="small")
+    who.caption(f"Signed in as **{USER['name']}**")
+    if out.button("Exit", help=f"Sign out of {USER['email']}", use_container_width=True):
+        # Drop the cached workspace handles with the session: the next account
+        # to sign in must not inherit this one's open databases.
+        get_database.clear()
+        for key in ("user", "chats", "current_chat_id", "chat_counter", "chat_profile"):
+            st.session_state.pop(key, None)
+        st.rerun()
+
     theme.section("Sessions", index="01")
 
     if st.button("New chat", use_container_width=True, type="primary"):
@@ -481,20 +614,6 @@ with st.sidebar:
             (f"{len(db.list_competitor_features())} rival", ""),
         ]
     )
-    if st.button("Load demo data", use_container_width=True):
-        counts = seed(db)
-        st.success(
-            f"Loaded {counts['competitors']} demo competitors, "
-            f"{counts['competitor_features']} rival features."
-        )
-        st.rerun()
-
-    if seed_data.loaded_samples(db):
-        if st.button("Clear demo data", use_container_width=True):
-            removed = seed_data.clear_samples(db)
-            st.success(f"Removed {removed} demo competitors.")
-            st.rerun()
-
     st.divider()
     theme.section("Settings", index="03")
 
@@ -542,8 +661,8 @@ theme.hero(
     mark=LOGO_MARK,
 )
 
-chat_tab, memory_tab, compare_tab, ip_tab = st.tabs(
-    ["Chat", "Features", "Competitor Comparison", "Copyright Analyser"]
+chat_tab, memory_tab, board_tab, compare_tab, ip_tab = st.tabs(
+    ["Chat", "Features", "Board", "Competitor Comparison", "Copyright Analyser"]
 )
 
 
@@ -635,8 +754,9 @@ with memory_tab:
     theme.section(
         "Product memory",
         note=(
-            "Everything you have filed from chat. Proxima never writes here on "
-            "its own — each entry got here because you saved it."
+            "This chat's product. Every other chat keeps its own — features, "
+            "competitors and risk checks belong to the thing being discussed. "
+            "Proxima files nothing here on its own."
         ),
         index="01",
     )
@@ -644,6 +764,67 @@ with memory_tab:
     features = db.list_features()
     bugs = db.list_bugs()
     feedback_items = db.list_feedback()
+
+    # Reading the whole conversation catches what message-by-message matching
+    # cannot: a product described across four turns and never "requested".
+    read_col, hand_col, _ = st.columns([2, 2, 2])
+
+    with hand_col.popover("Add feature", use_container_width=True):
+        with st.form("hand_feature", clear_on_submit=True):
+            st.caption("Yours to type. Nothing is guessed here.")
+            hand_title = st.text_input("Title")
+            hand_desc = st.text_area("Description", height=80)
+            grade = st.columns(3)
+            hand_priority = grade[0].selectbox("Priority", LEVELS, index=1, key="hand_pri")
+            hand_impact = grade[1].selectbox("Impact", LEVELS, index=1, key="hand_imp")
+            hand_effort = grade[2].selectbox("Effort", LEVELS, index=1, key="hand_eff")
+            hand_status = st.selectbox("Status", FEATURE_STATUSES, key="hand_status")
+            if st.form_submit_button("Add feature", type="primary") and hand_title.strip():
+                db.create_feature(
+                    title=hand_title.strip(),
+                    description=hand_desc.strip() or None,
+                    priority=hand_priority,
+                    impact=hand_impact,
+                    effort=hand_effort,
+                    status=hand_status,
+                )
+                st.session_state.save_toast = f"Added {hand_title.strip()}."
+                st.rerun()
+
+    if messages:
+        if read_col.button(
+            "Read this chat for features",
+            use_container_width=True,
+            type="primary" if not features else "secondary",
+            help="Goes through the whole conversation and lists what your product does.",
+        ):
+            with st.spinner("Reading the conversation…"):
+                profile = get_agent().profile_product(messages)
+            if profile.get("features"):
+                st.session_state.chat_profile = profile
+            else:
+                st.session_state.save_toast = "Nothing in this chat describes a product yet."
+                st.rerun()
+
+    proposed = st.session_state.get("chat_profile")
+    if proposed:
+        with st.container(border=True):
+            if proposed.get("summary"):
+                st.markdown(f"**Proxima reads this chat as:** {proposed['summary']}")
+            st.caption("Filing these puts them in this chat's feature list.")
+            for feature in proposed["features"]:
+                st.markdown(f"- **{feature['title']}** — {feature.get('description', '')}")
+            keep, drop, _ = st.columns([2, 1, 2])
+            if keep.button(
+                f"File all {len(proposed['features'])}", use_container_width=True, type="primary"
+            ):
+                added = file_product_features(proposed)
+                st.session_state.pop("chat_profile", None)
+                st.session_state.save_toast = f"Filed {added} features."
+                st.rerun()
+            if drop.button("Discard", use_container_width=True):
+                st.session_state.pop("chat_profile", None)
+                st.rerun()
 
     theme.pills(
         [
@@ -738,6 +919,227 @@ with memory_tab:
                     st.rerun()
 
 
+# ---------------------------------------------------------------- Board tab
+COLUMNS = ["Backlog", "To do", "In Progress", "Done"]
+SPRINT_STATES = ["Planned", "Active", "Finished"]
+PRIORITY_TONE = {"High": "danger", "Medium": "warn", "Low": ""}
+
+
+with board_tab:
+    theme.section(
+        "Board",
+        note=(
+            "Work, as opposed to what the product does — that lives in Features. "
+            "A ticket can come from a feature you filed, from something you said "
+            "in the chat, or from you typing it here."
+        ),
+        index="01",
+    )
+
+    sprints = db.list_sprints()
+    sprint_names = {sprint["id"]: sprint["name"] for sprint in sprints}
+
+    # --- sprint bar
+    pick, make, _ = st.columns([3, 2, 2])
+    view_options = ["Everything", "Backlog only"] + [s["name"] for s in sprints]
+    view = pick.selectbox("Showing", view_options, label_visibility="collapsed")
+
+    with make.popover("New sprint", use_container_width=True):
+        with st.form("new_sprint", clear_on_submit=True):
+            sprint_name = st.text_input("Name", placeholder=f"Sprint {len(sprints) + 1}")
+            sprint_goal = st.text_area("Goal", height=70, placeholder="What this sprint is for")
+            span = st.columns(2)
+            starts = span[0].date_input("Starts", value=None, format="YYYY-MM-DD")
+            ends = span[1].date_input("Ends", value=None, format="YYYY-MM-DD")
+            if st.form_submit_button("Create sprint", type="primary"):
+                name = sprint_name.strip() or f"Sprint {len(sprints) + 1}"
+                db.create_sprint(
+                    name=name,
+                    goal=sprint_goal.strip() or None,
+                    starts=str(starts) if starts else None,
+                    ends=str(ends) if ends else None,
+                )
+                st.session_state.save_toast = f"{name} created."
+                st.rerun()
+
+    # --- what the board is showing
+    if view == "Backlog only":
+        tickets = [t for t in db.list_tickets() if t["sprint_id"] is None]
+        active_sprint = None
+    elif view == "Everything":
+        tickets = db.list_tickets()
+        active_sprint = None
+    else:
+        active_sprint = next((s for s in sprints if s["name"] == view), None)
+        tickets = db.list_tickets(sprint_id=active_sprint["id"]) if active_sprint else []
+
+    if active_sprint:
+        with st.container(border=True):
+            head, state_col, kill = st.columns([4, 2, 1])
+            head.markdown(
+                f"**{active_sprint['name']}** — {active_sprint.get('goal') or '_no goal set_'}"
+            )
+            dates = " → ".join(
+                x for x in [active_sprint.get("starts"), active_sprint.get("ends")] if x
+            )
+            if dates:
+                head.caption(dates)
+            new_state = state_col.selectbox(
+                "State",
+                SPRINT_STATES,
+                index=SPRINT_STATES.index(active_sprint.get("state") or "Planned"),
+                key=f"sprint_state_{active_sprint['id']}",
+                label_visibility="collapsed",
+            )
+            if new_state != (active_sprint.get("state") or "Planned"):
+                db.update_sprint(active_sprint["id"], state=new_state)
+                st.rerun()
+            if kill.button("Delete", key=f"del_sprint_{active_sprint['id']}", use_container_width=True):
+                db.delete_sprint(active_sprint["id"])
+                st.session_state.save_toast = "Sprint deleted — its tickets went back to the backlog."
+                st.rerun()
+
+            done = [t for t in tickets if t["status"] == "Done"]
+            if tickets:
+                st.progress(len(done) / len(tickets), text=f"{len(done)} of {len(tickets)} done")
+
+    # --- ways to get work onto the board
+    add_col, scan_col, feat_col, _ = st.columns([2, 2, 2, 1])
+
+    with add_col.popover("Add ticket", use_container_width=True):
+        with st.form("new_ticket", clear_on_submit=True):
+            ticket_title = st.text_input("Title")
+            ticket_desc = st.text_area("Description", height=80)
+            row = st.columns(3)
+            ticket_priority = row[0].selectbox("Priority", LEVELS, index=1)
+            ticket_status = row[1].selectbox("Column", COLUMNS)
+            ticket_points = row[2].number_input("Estimate", min_value=0, max_value=21, value=0)
+            ticket_sprint = st.selectbox(
+                "Sprint", ["Backlog"] + [s["name"] for s in sprints]
+            )
+            if st.form_submit_button("Add", type="primary") and ticket_title.strip():
+                target = next((s["id"] for s in sprints if s["name"] == ticket_sprint), None)
+                db.create_ticket(
+                    title=ticket_title.strip(),
+                    description=ticket_desc.strip() or None,
+                    status=ticket_status,
+                    priority=ticket_priority,
+                    estimate=int(ticket_points) or None,
+                    sprint_id=target,
+                    origin="typed",
+                )
+                st.session_state.save_toast = "Ticket added."
+                st.rerun()
+
+    if scan_col.button(
+        "Suggest tickets from this chat",
+        use_container_width=True,
+        disabled=not messages,
+        help="Reads the conversation for work it implies. Nothing is added until you say so.",
+    ):
+        with st.spinner("Reading the conversation…"):
+            st.session_state.ticket_proposal = get_agent().suggest_tickets(messages)
+        st.rerun()
+
+    with feat_col.popover("From a feature", use_container_width=True):
+        filed = db.list_features()
+        if not filed:
+            st.caption("Nothing filed in Features yet.")
+        else:
+            source = st.selectbox("Feature", [f["title"] for f in filed], key="ticket_from_feature")
+            picked_feature = next(f for f in filed if f["title"] == source)
+            if st.button("Create ticket", type="primary", key="make_ticket_from_feature"):
+                db.create_ticket(
+                    title=f"Build {picked_feature['title']}",
+                    description=picked_feature.get("description") or None,
+                    priority=str(picked_feature.get("priority") or "Medium").title(),
+                    feature_id=picked_feature["id"],
+                    origin="feature",
+                )
+                st.session_state.save_toast = f"Ticket created from {picked_feature['title']}."
+                st.rerun()
+
+    proposed_tickets = st.session_state.get("ticket_proposal")
+    if proposed_tickets is not None:
+        with st.container(border=True):
+            if not proposed_tickets:
+                st.caption("Nothing in this chat reads as work to be done yet.")
+            else:
+                st.markdown("**Work this chat implies.** Uncheck anything you disagree with.")
+                keep = []
+                for index, ticket in enumerate(proposed_tickets):
+                    label = f"**{ticket['title']}** — {ticket['description']}"
+                    if st.checkbox(label, value=True, key=f"tick_{index}_{ticket['title'][:20]}"):
+                        keep.append(ticket)
+                target_sprint = st.selectbox(
+                    "Add to", ["Backlog"] + [s["name"] for s in sprints], key="ticket_target"
+                )
+                go, _ = st.columns([2, 3])
+                if go.button(
+                    f"Add {len(keep)} ticket{'s' if len(keep) != 1 else ''}",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not keep,
+                ):
+                    target = next((s["id"] for s in sprints if s["name"] == target_sprint), None)
+                    for ticket in keep:
+                        db.create_ticket(
+                            title=ticket["title"],
+                            description=ticket["description"] or None,
+                            priority=ticket["priority"],
+                            sprint_id=target,
+                            origin="chat",
+                        )
+                    st.session_state.pop("ticket_proposal", None)
+                    st.session_state.save_toast = f"Added {len(keep)} tickets."
+                    st.rerun()
+            if st.button("Close", key="ticket_close"):
+                st.session_state.pop("ticket_proposal", None)
+                st.rerun()
+
+    st.divider()
+
+    # --- the board itself
+    if not tickets:
+        theme.empty_state(
+            label="Board empty",
+            title="No tickets here yet",
+            body=(
+                "Add one by hand, pull the work out of your chat, or turn a filed "
+                "feature into a ticket. Sprints are optional — the backlog works "
+                "on its own."
+            ),
+        )
+    else:
+        # The lanes are a component (see kanban.py) because dragging a card
+        # from one column to another is not something Streamlit can observe.
+        action = kanban(
+            columns=COLUMNS,
+            tickets=[
+                {
+                    "id": ticket["id"],
+                    "title": ticket["title"],
+                    "description": (ticket.get("description") or "")[:160],
+                    "status": ticket.get("status") or COLUMNS[0],
+                    "priority": ticket.get("priority") or "Medium",
+                    "estimate": ticket.get("estimate"),
+                    "sprint": sprint_names.get(ticket.get("sprint_id")),
+                    "origin": ticket.get("origin"),
+                }
+                for ticket in tickets
+            ],
+            show_sprint=view == "Everything",
+        )
+
+        if isinstance(action, dict) and action.get("nonce") != st.session_state.get("board_nonce"):
+            st.session_state.board_nonce = action["nonce"]
+            if action.get("kind") == "move" and action.get("status") in COLUMNS:
+                db.update_ticket(int(action["id"]), status=action["status"])
+            elif action.get("kind") == "delete":
+                db.delete_ticket(int(action["id"]))
+            st.rerun()
+
+
 # ------------------------------------------------- Competitor comparison tab
 with compare_tab:
     theme.section(
@@ -751,21 +1153,143 @@ with compare_tab:
 
     competitors = db.list_competitors()
     our_features = db.list_features()
+    known_names = {c["name"] for c in competitors}
 
-    # Say plainly when the analysis is running on the fictional sample set.
-    samples_present = seed_data.loaded_samples(db)
-    if samples_present:
-        theme.demo_banner([c["name"] for c in samples_present])
+    # Three ways in, because they answer different questions: who did I already
+    # mention, who else is out there, and the one I happen to know about. The
+    # last one is a plain form, and stays that way — it is the only one of the
+    # three that is never wrong.
+    scan_col, suggest_col, manual_col, _ = st.columns([2, 2, 2, 1])
+
+    with manual_col:
+        with st.popover("Add one by hand", use_container_width=True):
+            with st.form("quick_competitor", clear_on_submit=True):
+                st.caption("Yours to type. Nothing is guessed here.")
+                hand_name = st.text_input("Name")
+                hand_site = st.text_input("Website")
+                hand_pos = st.text_area("Positioning", height=70)
+                look_up = st.checkbox(
+                    "Also fill in their features", value=True,
+                    help="Asks the local model what it knows of their product.",
+                )
+                if st.form_submit_button("Add competitor", type="primary") and hand_name.strip():
+                    db.upsert_competitor(
+                        name=hand_name.strip(),
+                        website=hand_site.strip() or None,
+                        positioning=hand_pos.strip() or None,
+                    )
+                    if look_up:
+                        st.session_state.research_queue = hand_name.strip()
+                    st.session_state.save_toast = f"Added {hand_name.strip()}."
+                    st.rerun()
+
+    if scan_col.button(
+        "Scan this chat for competitors",
+        use_container_width=True,
+        disabled=not messages,
+        help="Reads the whole conversation and files the rivals you named.",
+    ):
+        with st.spinner("Reading the conversation…"):
+            named = get_agent().competitors_in_conversation(messages)
+        fresh = [c for c in named if c["name"] not in known_names]
+        already = [c["name"] for c in named if c["name"] in known_names]
+        st.session_state.rival_proposal = {
+            "source": "chat",
+            "rows": fresh,
+            # Say which of the two nothings this is: nobody was named, or
+            # everybody named is already on file.
+            "empty": (
+                f"Already filed, so nothing to add: {', '.join(already)}."
+                if already
+                else "No competitor is named in this chat yet. Mention one by "
+                "name — \"like Airbnb but for parking\" counts — and scan again."
+            ),
+        }
+        st.rerun()
+
+    if suggest_col.button(
+        "Suggest rivals",
+        use_container_width=True,
+        disabled=not messages,
+        help="Names competitors the chat never mentioned, from what your product does.",
+    ):
+        with st.spinner("Thinking about who else is out there…"):
+            profile = st.session_state.get("chat_profile") or get_agent().profile_product(messages)
+            summary = profile.get("summary", "")
+            rows = get_agent().suggest_rivals(summary, exclude=known_names) if summary else []
+        st.session_state.rival_proposal = {
+            "source": "model",
+            "rows": rows,
+            "summary": summary,
+            "empty": "Describe your product in the chat first — there is nothing to match against.",
+        }
+        st.rerun()
+
+    proposal = st.session_state.get("rival_proposal")
+    if proposal is not None:
+        with st.container(border=True):
+            if not proposal["rows"]:
+                st.caption(proposal["empty"])
+            else:
+                if proposal["source"] == "model":
+                    st.markdown(
+                        "**Not mentioned in this chat** — suggested from "
+                        f"_{proposal.get('summary', 'your product')}_. The model is "
+                        "going from memory here, so check a name before you trust it."
+                    )
+                else:
+                    st.markdown("**Named in this chat.**")
+
+                picked = []
+                for row in proposal["rows"]:
+                    label = f"**{row['name']}**"
+                    detail = row.get("why") or row.get("positioning") or ""
+                    if st.checkbox(
+                        f"{label} — {detail}" if detail else label,
+                        value=True,
+                        key=f"rival_pick_{row['name']}",
+                    ):
+                        picked.append(row)
+
+                st.caption(
+                    "Filing one also fills in what the model knows of its feature "
+                    "set, so the comparison below has something to match against."
+                )
+                go, _ = st.columns([2, 3])
+                if go.button(
+                    f"File {len(picked)} competitor{'s' if len(picked) != 1 else ''}",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not picked,
+                ):
+                    progress = st.progress(0.0, text="Filing…")
+                    for index, row in enumerate(picked, start=1):
+                        db.upsert_competitor(
+                            name=row["name"],
+                            positioning=row.get("positioning") or None,
+                        )
+                        progress.progress(
+                            (index - 0.5) / len(picked), text=f"Reading up on {row['name']}…"
+                        )
+                        run_research(row["name"])
+                        progress.progress(index / len(picked), text=f"Filed {row['name']}")
+                    st.session_state.pop("rival_proposal", None)
+                    st.session_state.save_toast = f"Filed {len(picked)} competitors."
+                    st.rerun()
+
+            if st.button("Close", key="rival_close"):
+                st.session_state.pop("rival_proposal", None)
+                st.rerun()
 
     if not competitors:
-        st.warning(
-            "No competitors yet. Add one below, or click **Load sample competitors** "
-            "in the sidebar to see how this works."
+        st.info(
+            "No competitors in this chat yet. Name one while you talk to Proxima "
+            "and it offers to file them — or scan the chat above."
         )
     if not our_features:
-        st.warning(
-            "No features of your own yet. Talk to the agent in the Chat tab, or load "
-            "the sample workspace from the sidebar."
+        st.info(
+            "No features of your own yet. Describe what you are building in the "
+            "Chat tab, then use **Read this chat for features** on the Features tab."
         )
 
     if competitors and our_features:
@@ -780,19 +1304,38 @@ with compare_tab:
             gaps = competitor_analyzer.gap_analysis(our_features, selected)
 
             # --- headline numbers
+            blank = [s.name for s in scores if not s.researched]
+            if blank:
+                st.warning(
+                    "No feature list on file for "
+                    + ", ".join(f"**{name}**" for name in blank)
+                    + ". They are left out of the percentages below — a rival "
+                    "nobody has researched is not the same as a rival with "
+                    "nothing. Use **Look them up** to fill them in.",
+                    icon="⚠️",
+                )
+                if st.button(f"Look them up ({len(blank)})", type="primary"):
+                    progress = st.progress(0.0, text="Reading up…")
+                    for index, name in enumerate(blank, start=1):
+                        progress.progress((index - 0.5) / len(blank), text=f"Reading up on {name}…")
+                        run_research(name)
+                        progress.progress(index / len(blank), text=f"Done: {name}")
+                    st.rerun()
+
             cols = st.columns(len(scores)) if scores else []
             for col, score in zip(cols, scores):
                 with col:
+                    if not score.researched:
+                        st.metric(score.name, "—", "not researched", delta_color="off")
+                        theme.pills([("No data", "warn")])
+                        continue
                     st.metric(
                         score.name,
                         f"{int(score.overlap * 100)}% overlap",
                         f"{len(score.their_advantage)} unanswered",
                         delta_color="inverse",
                     )
-                    tags = [(f"Threat: {score.threat}", RISK_TONE[score.threat])]
-                    if score.name in seed_data.SAMPLE_COMPETITOR_NAMES:
-                        tags.append(("Demo", "warn"))
-                    theme.pills(tags)
+                    theme.pills([(f"Threat: {score.threat}", RISK_TONE[score.threat])])
 
             st.divider()
 
@@ -805,13 +1348,18 @@ with compare_tab:
                 for name in selected:
                     cell = row.per_competitor[name]
                     icon = STATUS_ICON[cell["status"]]
-                    if cell["matched_feature"] and cell["status"] != "Gap":
+                    if cell["status"] == STATUS_UNKNOWN:
+                        entry[name] = f"{icon} no data"
+                    elif cell["matched_feature"] and cell["status"] != "Gap":
                         entry[name] = f"{icon} {cell['matched_feature']}"
                     else:
                         entry[name] = f"{icon} —"
                 table.append(entry)
             st.dataframe(table, use_container_width=True, hide_index=True)
-            st.caption("✅ they have it · 🟡 partial equivalent · ❌ you're alone here")
+            st.caption(
+                "✅ they have it · 🟡 partial equivalent · ❌ you're alone here · "
+                "· nothing on file for them, so nothing is claimed"
+            )
 
             st.divider()
 
@@ -919,13 +1467,157 @@ with ip_tab:
     if not rival_features:
         st.warning(
             "No competitor features loaded yet — the analyser has nothing to compare "
-            "against. Load the sample set from the sidebar or add competitors in the "
-            "Competitor Comparison tab."
+            "against. Add competitors in the Competitor Comparison tab — scanning "
+            "the chat there fills in their feature lists too."
         )
+
+    # --- the sweep: everything we build, against everyone we know about
+    own_filed = db.list_features()
+
+    sweep_col, _ = st.columns([2, 3])
+    if sweep_col.button(
+        "Scan everything",
+        type="primary",
+        use_container_width=True,
+        disabled=not rival_features,
+        help="Checks every feature you have — filed, plus any this chat describes — against every competitor.",
+    ):
+        with st.spinner("Reading this chat for features…"):
+            profile = st.session_state.get("chat_profile") or (
+                get_agent().profile_product(messages) if messages else {}
+            )
+        filed_titles = {f["title"].lower() for f in own_filed}
+        from_chat = [
+            {"title": f["title"], "description": f.get("description", ""), "source": "chat"}
+            for f in profile.get("features", [])
+            if f["title"].lower() not in filed_titles
+        ]
+        everything = [dict(f, source="filed") for f in own_filed] + from_chat
+
+        if not everything:
+            st.session_state.save_toast = "No features to check yet."
+        else:
+            with st.spinner(f"Checking {len(everything)} features against every competitor…"):
+                st.session_state.ip_sweep = {
+                    "rows": CopyrightSweep(ip_analyzer).run(everything, rival_features),
+                    "competitors": sorted({f["competitor_name"] for f in rival_features}),
+                    "from_chat": [f["title"] for f in from_chat],
+                }
+        st.rerun()
+
+    sweep = st.session_state.get("ip_sweep")
+    if sweep and sweep["rows"]:
+        rows = sweep["rows"]
+        hottest = rows[0]
+        counts = Counter(row.worst_level for row in rows)
+
+        theme.pills(
+            [(f"{len(rows)} features checked", "accent")]
+            + [
+                (f"{counts[level]} {level.lower()}", tone)
+                for level, tone in [
+                    ("High", "danger"),
+                    ("Elevated", "warn"),
+                    ("Moderate", "warn"),
+                    ("Low", "ok"),
+                ]
+                if counts.get(level)
+            ]
+            + ([(f"{len(sweep['from_chat'])} read from chat", "")] if sweep["from_chat"] else [])
+        )
+
+        if hottest.worst_score >= 50:
+            st.warning(
+                f"**{hottest.feature_title}** is the closest thing you have to "
+                f"{hottest.worst_competitor}'s work "
+                f"({int(round(hottest.worst_score))}%). Expand it below for what drives that.",
+                icon="⚖️",
+            )
+
+        theme.risk_matrix(rows, sweep["competitors"])
+        st.caption(
+            "Each cell: how close that feature of yours reads to that competitor's "
+            "nearest equivalent, and which one. Wording similarity — an idea you "
+            "share with a rival is not itself infringement."
+        )
+
+        st.divider()
+        theme.section("What drives each score", index="02")
+        for row in rows:
+            with st.expander(
+                f"**{row.feature_title}** — {int(round(row.worst_score))}% "
+                f"{row.worst_level}"
+                + (f" · closest to {row.worst_competitor}" if row.worst_competitor else "")
+            ):
+                report = row.report
+                if report and report.matches:
+                    st.markdown("**Closest competitor features**")
+                    for match in report.matches[:4]:
+                        st.markdown(
+                            f"- **{match.competitor} / {match.feature}** — {match.relationship}"
+                            + (f" · verbatim: “{match.verbatim}”" if match.verbatim else "")
+                        )
+                if report and report.findings:
+                    st.markdown("**Findings**")
+                    for finding in report.findings[:5]:
+                        st.markdown(
+                            f"- {STATUS_DOT.get(finding.severity, '•')} "
+                            f"_{finding.kind}_ — {finding.detail}"
+                        )
+                if report and report.recommendations:
+                    st.markdown("**What to do**")
+                    for tip in report.recommendations:
+                        st.markdown(f"- {tip}")
+
+        if st.button("Clear results", key="clear_sweep"):
+            st.session_state.pop("ip_sweep", None)
+            st.rerun()
+
+        st.divider()
+
+    theme.section("Check one feature", index="03")
+
+    # Same way in as the other tabs: read the chat rather than retype the spec.
+    scan_ip, pick_ip, _ = st.columns([2, 2, 3])
+
+    if scan_ip.button(
+        "Scan this chat",
+        use_container_width=True,
+        disabled=not messages,
+        help="Takes what you described building and fills the form in.",
+    ):
+        with st.spinner("Reading the conversation…"):
+            profile = st.session_state.get("chat_profile") or get_agent().profile_product(messages)
+        first = (profile.get("features") or [{}])[0]
+        st.session_state.ip_title = first.get("title") or ""
+        st.session_state.ip_desc = (
+            first.get("description") or profile.get("summary") or ""
+        )
+        if not st.session_state.ip_title:
+            st.session_state.save_toast = "Nothing in this chat describes a feature yet."
+        st.rerun()
+
+    # Or check one already filed, without retyping it.
+    own_features = own_filed
+    if own_features:
+        chosen = pick_ip.selectbox(
+            "Check a filed feature",
+            options=["—"] + [f["title"] for f in own_features],
+            label_visibility="collapsed",
+        )
+        if chosen != "—":
+            picked = next(f for f in own_features if f["title"] == chosen)
+            if st.session_state.get("ip_picked") != chosen:
+                st.session_state.ip_picked = chosen
+                st.session_state.ip_title = picked["title"]
+                st.session_state.ip_desc = picked.get("description") or ""
+                st.rerun()
 
     with st.form("ip_check"):
         proposed_title = st.text_input(
-            "Feature name", placeholder="Smart feedback digest"
+            "Feature name",
+            placeholder="Smart feedback digest",
+            key="ip_title",
         )
         proposed_desc = st.text_area(
             "Feature description / spec",
@@ -934,6 +1626,7 @@ with ip_tab:
                 "Describe what you plan to build, in the words you'd put in the spec. "
                 "The more detail, the better the wording analysis."
             ),
+            key="ip_desc",
         )
         run_ip = st.form_submit_button("Analyse risk", type="primary")
 
@@ -1069,6 +1762,7 @@ if pending is not None:
 
     pending_item["agent"] = written
     slot.markdown(written)
+    remember_sessions()
 
 # With the answer delivered, have the model read the message back for anything
 # worth filing that the keyword rules did not catch — a rival named in passing,
@@ -1087,4 +1781,20 @@ if unread is not None:
     )
     if extra:
         unread["suggestions"] = merge_suggestions(unread.get("suggestions", []), extra)
+    remember_sessions()
+    if extra:
+        st.rerun()
+
+# A competitor was just filed. Look its product up now — after the page is
+# painted, so the save itself stayed instant.
+queued = st.session_state.get("research_queue")
+if queued:
+    with st.spinner(f"Reading up on {queued}…"):
+        found = run_research(queued)
+    # Cleared only once the lookup has actually returned. Popping it up front
+    # loses the work if the run is interrupted part-way — which is exactly what
+    # a lookup taking ten seconds invites.
+    st.session_state.pop("research_queue", None)
+    if found:
+        st.session_state.save_toast = f"Recalled {found} {queued} features."
         st.rerun()

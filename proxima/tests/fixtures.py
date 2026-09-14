@@ -1,8 +1,9 @@
-"""Illustrative starter data so the analysers have something to chew on.
+"""Fixture data for the analyser tests.
 
-These entries are generic placeholders written for demo purposes, not researched
-claims about any real company's shipping feature set. Replace them with your own
-verified competitor research before you rely on any output.
+Invented competitors with invented feature sets, shaped so the matching has
+something with known answers to chew on. This is test scaffolding only — the
+app ships no sample data, because a backlog seeded with fiction is worse than
+an empty one.
 """
 
 from __future__ import annotations

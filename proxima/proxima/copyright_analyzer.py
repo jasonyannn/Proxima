@@ -464,3 +464,89 @@ class CopyrightAnalyzer:
 def _first_match(pattern: re.Pattern[str], text: str) -> str:
     found = pattern.search(text)
     return found.group(0) if found else ""
+
+
+@dataclass
+class SweepCell:
+    """One feature of ours judged against one competitor."""
+
+    competitor: str
+    risk_score: float
+    risk_level: str
+    closest_feature: str | None
+    relationship: str
+
+
+@dataclass
+class SweepRow:
+    """One of our features, against every competitor at once."""
+
+    feature_title: str
+    feature_description: str
+    worst_score: float
+    worst_level: str
+    worst_competitor: str | None
+    per_competitor: dict[str, SweepCell] = field(default_factory=dict)
+    report: IPReport | None = None      # the full reading, against everyone
+
+
+class CopyrightSweep:
+    """Every feature against every competitor, in one pass.
+
+    The single-feature check answers "is this one idea risky". The question a
+    product manager actually has is "which of the things we are building look
+    like someone else's, and whose" — which needs the whole grid, because risk
+    concentrated in one rival reads completely differently from the same score
+    spread thinly across five.
+
+    Scoring is the same machinery as the single check (see CopyrightAnalyzer),
+    run once per pair. It is text similarity, not law: see DISCLAIMER.
+    """
+
+    def __init__(self, analyzer: "CopyrightAnalyzer") -> None:
+        self.analyzer = analyzer
+
+    def run(
+        self,
+        our_features: list[dict[str, Any]],
+        competitor_features: list[dict[str, Any]],
+    ) -> list[SweepRow]:
+        by_competitor: dict[str, list[dict[str, Any]]] = {}
+        for feature in competitor_features:
+            by_competitor.setdefault(feature.get("competitor_name", "Unknown"), []).append(feature)
+
+        rows: list[SweepRow] = []
+        for ours in our_features:
+            title = ours.get("title") or ours.get("name") or "Untitled"
+            description = ours.get("description") or ""
+
+            cells: dict[str, SweepCell] = {}
+            for name, theirs in by_competitor.items():
+                report = self.analyzer.analyze(title, description, theirs, top_n=1)
+                closest = report.matches[0] if report.matches else None
+                cells[name] = SweepCell(
+                    competitor=name,
+                    risk_score=report.risk_score,
+                    risk_level=report.risk_level,
+                    closest_feature=closest.feature if closest else None,
+                    relationship=closest.relationship if closest else "nothing comparable",
+                )
+
+            # The headline is the worst single rival, not an average: an average
+            # buries one serious overlap under four harmless ones.
+            worst = max(cells.values(), key=lambda c: c.risk_score, default=None)
+            whole = self.analyzer.analyze(title, description, competitor_features)
+            rows.append(
+                SweepRow(
+                    feature_title=title,
+                    feature_description=description,
+                    worst_score=worst.risk_score if worst else 0.0,
+                    worst_level=worst.risk_level if worst else "Low",
+                    worst_competitor=worst.competitor if worst else None,
+                    per_competitor=cells,
+                    report=whole,
+                )
+            )
+
+        rows.sort(key=lambda row: row.worst_score, reverse=True)
+        return rows

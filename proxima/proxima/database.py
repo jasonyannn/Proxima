@@ -57,6 +57,35 @@ class DatabaseManager:
             )
             connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS sprint (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    goal TEXT,
+                    starts TEXT,
+                    ends TEXT,
+                    state TEXT DEFAULT 'Planned',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ticket (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    description TEXT,
+                    status TEXT DEFAULT 'Backlog',
+                    priority TEXT DEFAULT 'Medium',
+                    estimate INTEGER,
+                    sprint_id INTEGER REFERENCES sprint(id) ON DELETE SET NULL,
+                    feature_id INTEGER REFERENCES feature(id) ON DELETE SET NULL,
+                    origin TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS competitor (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
@@ -188,6 +217,107 @@ class DatabaseManager:
     def delete_feedback(self, feedback_id: int) -> None:
         with closing(self.connect()) as connection:
             connection.execute("DELETE FROM feedback WHERE id = ?", (feedback_id,))
+            connection.commit()
+
+
+    # ------------------------------------------------------------- board ---
+    # Tickets are work; features are what the product does. Keeping them in
+    # separate tables is what lets the Features tab stay a description of the
+    # product rather than turning into a to-do list.
+
+    def create_sprint(
+        self,
+        name: str,
+        goal: str | None = None,
+        starts: str | None = None,
+        ends: str | None = None,
+        state: str = "Planned",
+    ) -> int:
+        with closing(self.connect()) as connection:
+            cursor = connection.execute(
+                "INSERT INTO sprint (name, goal, starts, ends, state) VALUES (?, ?, ?, ?, ?)",
+                (name, goal, starts, ends, state),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_sprints(self) -> list[dict[str, Any]]:
+        with closing(self.connect()) as connection:
+            rows = connection.execute("SELECT * FROM sprint ORDER BY id DESC").fetchall()
+            return [dict(row) for row in rows]
+
+    def update_sprint(self, sprint_id: int, **fields: Any) -> None:
+        allowed = {"name", "goal", "starts", "ends", "state"}
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in sets)
+        with closing(self.connect()) as connection:
+            connection.execute(
+                f"UPDATE sprint SET {assignments} WHERE id = ?",
+                (*sets.values(), sprint_id),
+            )
+            connection.commit()
+
+    def delete_sprint(self, sprint_id: int) -> None:
+        """Removing a sprint returns its tickets to the backlog rather than
+        deleting work nobody asked to lose."""
+        with closing(self.connect()) as connection:
+            connection.execute(
+                "UPDATE ticket SET sprint_id = NULL WHERE sprint_id = ?", (sprint_id,)
+            )
+            connection.execute("DELETE FROM sprint WHERE id = ?", (sprint_id,))
+            connection.commit()
+
+    def create_ticket(
+        self,
+        title: str,
+        description: str | None = None,
+        status: str = "Backlog",
+        priority: str = "Medium",
+        estimate: int | None = None,
+        sprint_id: int | None = None,
+        feature_id: int | None = None,
+        origin: str | None = None,
+    ) -> int:
+        with closing(self.connect()) as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO ticket
+                    (title, description, status, priority, estimate, sprint_id, feature_id, origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (title, description, status, priority, estimate, sprint_id, feature_id, origin),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_tickets(self, sprint_id: int | None = None) -> list[dict[str, Any]]:
+        query = "SELECT * FROM ticket"
+        params: tuple[Any, ...] = ()
+        if sprint_id is not None:
+            query += " WHERE sprint_id = ?"
+            params = (sprint_id,)
+        query += " ORDER BY id DESC"
+        with closing(self.connect()) as connection:
+            return [dict(row) for row in connection.execute(query, params).fetchall()]
+
+    def update_ticket(self, ticket_id: int, **fields: Any) -> None:
+        allowed = {"title", "description", "status", "priority", "estimate", "sprint_id"}
+        sets = {k: v for k, v in fields.items() if k in allowed}
+        if not sets:
+            return
+        assignments = ", ".join(f"{key} = ?" for key in sets)
+        with closing(self.connect()) as connection:
+            connection.execute(
+                f"UPDATE ticket SET {assignments} WHERE id = ?",
+                (*sets.values(), ticket_id),
+            )
+            connection.commit()
+
+    def delete_ticket(self, ticket_id: int) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute("DELETE FROM ticket WHERE id = ?", (ticket_id,))
             connection.commit()
 
     def upsert_competitor(

@@ -25,7 +25,7 @@ from competitors import (  # noqa: E402
 )
 from copyright_analyzer import CopyrightAnalyzer  # noqa: E402
 from database import DatabaseManager  # noqa: E402
-from seed_data import seed  # noqa: E402
+from fixtures import seed  # noqa: E402
 from textsim import (  # noqa: E402
     concept_similarity,
     expression_similarity,

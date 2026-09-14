@@ -97,3 +97,8 @@ venv/
 # directory is excluded, so the directory must be negated first.
 !.streamlit/
 !.streamlit/config.toml
+
+# Runtime data, never source: the accounts database, each account's chats, and
+# the per-chat workspaces. `*.db` above already covers the databases; this also
+# keeps the chat transcripts in sessions.json out of the repository.
+proxima/proxima/data/

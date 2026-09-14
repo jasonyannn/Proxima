@@ -30,6 +30,12 @@ STATUS_MATCH = "Match"
 STATUS_PARTIAL = "Partial"
 STATUS_GAP = "Gap"
 
+# Distinct from Gap on purpose. A gap means we looked at their feature list and
+# ours is not in it; unknown means there is no list to look at. Reporting the
+# second as the first turns "we have not researched them" into "we are ahead",
+# which is the most flattering possible lie a competitive tool can tell.
+STATUS_UNKNOWN = "Unknown"
+
 
 def _label_of(feature: dict[str, Any]) -> str:
     return feature.get("title") or feature.get("name") or "Untitled"
@@ -78,6 +84,7 @@ class CompetitorScore:
     their_advantage: list[dict[str, Any]]  # they have, we don't
     our_advantage: list[str]               # we have, they don't
     threat: str             # Low / Moderate / High
+    researched: bool = True  # False when we hold no feature list for them
 
 
 class CompetitorAnalyzer:
@@ -140,6 +147,13 @@ class CompetitorAnalyzer:
                 description=feature.get("description") or "",
             )
             for name in names:
+                if not by_competitor[name]:
+                    row.per_competitor[name] = {
+                        "status": STATUS_UNKNOWN,
+                        "score": 0.0,
+                        "matched_feature": None,
+                    }
+                    continue
                 match, score = self.best_match(feature, by_competitor[name])
                 row.per_competitor[name] = {
                     "status": classify(score),
@@ -180,6 +194,22 @@ class CompetitorAnalyzer:
                         }
                     )
 
+            # With nothing on file for them, we know nothing — not that we are
+            # ahead. Every number below would otherwise read as a clean sweep.
+            if not theirs:
+                scores.append(
+                    CompetitorScore(
+                        name=name,
+                        overlap=0.0,
+                        parity_count=0,
+                        their_advantage=[],
+                        our_advantage=[],
+                        threat="Unknown",
+                        researched=False,
+                    )
+                )
+                continue
+
             our_advantage = [
                 row.feature
                 for row in matrix
@@ -211,7 +241,8 @@ class CompetitorAnalyzer:
                 )
             )
 
-        rank = {"High": 0, "Moderate": 1, "Low": 2}
+        # Unknown sorts last: it is not a verdict, it is missing homework.
+        rank = {"High": 0, "Moderate": 1, "Low": 2, "Unknown": 3}
         return sorted(scores, key=lambda s: (rank[s.threat], -s.overlap))
 
     def gap_analysis(

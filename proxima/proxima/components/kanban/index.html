@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Mirrors the tokens in theme.py — the iframe gets none of the app's CSS. */
+  :root {
+    --bg: #0A0B0E;
+    --bg-alt: #0D0F13;
+    --surface: #121620;
+    --surface-hi: #171C27;
+    --line: #242A36;
+    --line-soft: #1A1F29;
+    --text: #E9ECF1;
+    --dim: #98A1B0;
+    --faint: #626B7B;
+    --accent: #4D7CFE;
+    --accent-dim: rgba(77, 124, 254, 0.14);
+    --volt: #C8F94C;
+    --warn: #FFB020;
+    --danger: #FF5A5F;
+    --font: 'Inter', system-ui, -apple-system, sans-serif;
+    --mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: var(--font);
+    color: var(--text);
+    overflow: hidden;
+  }
+
+  .board {
+    display: grid;
+    grid-template-columns: repeat(var(--lanes, 4), minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+
+  .lane {
+    border: 1px solid var(--line-soft);
+    border-radius: 12px;
+    background: var(--bg-alt);
+    padding: 10px;
+    min-height: 130px;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+
+  /* The drop target the pointer is currently over. */
+  .lane.over {
+    border-color: var(--accent);
+    background: var(--accent-dim);
+  }
+
+  .lane-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-size: 0.66rem;
+    font-weight: 600;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--dim);
+    padding: 2px 4px 10px;
+  }
+
+  .lane-head .count { color: var(--faint); }
+
+  .card {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: linear-gradient(165deg, var(--surface), var(--bg-alt));
+    padding: 11px 12px;
+    margin-bottom: 9px;
+    cursor: grab;
+    position: relative;
+    transition: border-color 0.15s ease, transform 0.08s ease, box-shadow 0.15s ease;
+  }
+
+  .card:hover { border-color: rgba(77, 124, 254, 0.45); }
+  .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card:active { cursor: grabbing; }
+
+  /* The card being dragged stays in place, dimmed, so the column does not
+     reflow under the pointer mid-drag. */
+  .card.dragging { opacity: 0.35; border-style: dashed; }
+
+  .card h4 {
+    font-size: 0.88rem;
+    font-weight: 600;
+    margin: 0 22px 5px 0;
+    line-height: 1.35;
+  }
+
+  .card p {
+    color: var(--faint);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    margin: 0 0 9px;
+  }
+
+  .marks { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .pill {
+    font-family: var(--mono);
+    font-size: 0.6rem;
+    font-weight: 500;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    padding: 2px 7px;
+    color: var(--dim);
+    background: var(--surface);
+  }
+
+  .pill.high { color: var(--danger); border-color: rgba(255, 90, 95, 0.32); background: rgba(255, 90, 95, 0.08); }
+  .pill.medium { color: var(--warn); border-color: rgba(255, 176, 32, 0.32); background: rgba(255, 176, 32, 0.08); }
+  .pill.sprint { color: #7CA0FF; border-color: rgba(77, 124, 254, 0.34); background: var(--accent-dim); }
+
+  .kill {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    border: 0;
+    background: none;
+    color: var(--faint);
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 5px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s ease, color 0.15s ease;
+  }
+
+  .card:hover .kill, .kill:focus-visible { opacity: 1; }
+  .kill:hover { color: var(--danger); background: rgba(255, 90, 95, 0.1); }
+
+  .empty {
+    color: var(--faint);
+    font-size: 0.75rem;
+    text-align: center;
+    padding: 14px 6px;
+    border: 1px dashed var(--line-soft);
+    border-radius: 8px;
+  }
+
+  .hint {
+    margin-top: 10px;
+    font-family: var(--mono);
+    font-size: 0.62rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--faint);
+  }
+</style>
+</head>
+<body>
+<div class="board" id="board"></div>
+<div class="hint">Drag a card between columns · or focus one and press ← →</div>
+
+<script>
+(function () {
+  "use strict";
+
+  function post(type, payload) {
+    window.parent.postMessage(
+      Object.assign({ isStreamlitMessage: true, type: type }, payload), "*");
+  }
+
+  let lastHeight = 0;
+  function syncHeight() {
+    const h = Math.ceil(document.body.scrollHeight) + 8;
+    if (h !== lastHeight) {
+      lastHeight = h;
+      post("streamlit:setFrameHeight", { height: h });
+    }
+  }
+
+  let nonce = 0;
+  function send(kind, payload) {
+    nonce += 1;
+    post("streamlit:setComponentValue", {
+      value: Object.assign({ kind: kind, nonce: nonce }, payload),
+      dataType: "json",
+    });
+  }
+
+  const board = document.getElementById("board");
+  let columns = [];
+  let tickets = [];
+  let showSprint = false;
+  let dragged = null;
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function cardNode(ticket) {
+    const card = document.createElement("div");
+    card.className = "card";
+    card.draggable = true;
+    card.tabIndex = 0;
+    card.dataset.id = ticket.id;
+    card.setAttribute("role", "button");
+    card.setAttribute(
+      "aria-label", `${ticket.title}, in ${ticket.status}. Use left and right arrows to move.`);
+
+    const marks = [];
+    const priority = (ticket.priority || "Medium");
+    marks.push(`<span class="pill ${priority.toLowerCase()}">${escapeHtml(priority)}</span>`);
+    if (ticket.estimate) marks.push(`<span class="pill">${escapeHtml(ticket.estimate)} pts</span>`);
+    if (showSprint && ticket.sprint) marks.push(`<span class="pill sprint">${escapeHtml(ticket.sprint)}</span>`);
+    if (ticket.origin === "chat") marks.push(`<span class="pill">from chat</span>`);
+    if (ticket.origin === "feature") marks.push(`<span class="pill">from feature</span>`);
+
+    card.innerHTML =
+      `<button class="kill" title="Delete this ticket" aria-label="Delete ${escapeHtml(ticket.title)}">×</button>` +
+      `<h4>${escapeHtml(ticket.title)}</h4>` +
+      (ticket.description ? `<p>${escapeHtml(ticket.description)}</p>` : "") +
+      `<div class="marks">${marks.join("")}</div>`;
+
+    card.addEventListener("dragstart", function (event) {
+      dragged = ticket;
+      card.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+      // Firefox refuses to start a drag without payload on the transfer.
+      event.dataTransfer.setData("text/plain", String(ticket.id));
+    });
+
+    card.addEventListener("dragend", function () {
+      card.classList.remove("dragging");
+      dragged = null;
+      [...document.querySelectorAll(".lane")].forEach(l => l.classList.remove("over"));
+    });
+
+    card.addEventListener("keydown", function (event) {
+      const at = columns.indexOf(ticket.status);
+      if (event.key === "ArrowRight" && at < columns.length - 1) {
+        event.preventDefault();
+        move(ticket, columns[at + 1]);
+      } else if (event.key === "ArrowLeft" && at > 0) {
+        event.preventDefault();
+        move(ticket, columns[at - 1]);
+      }
+    });
+
+    card.querySelector(".kill").addEventListener("click", function (event) {
+      event.stopPropagation();
+      tickets = tickets.filter(t => String(t.id) !== String(ticket.id));
+      render();
+      send("delete", { id: ticket.id });
+    });
+
+    return card;
+  }
+
+  function move(ticket, status) {
+    if (!status || status === ticket.status) return;
+    // Move it locally first: waiting for the server round trip would make the
+    // card snap back under the pointer before reappearing where it was put.
+    ticket.status = status;
+    render();
+    send("move", { id: ticket.id, status: status });
+  }
+
+  function render() {
+    board.style.setProperty("--lanes", columns.length);
+    board.innerHTML = "";
+
+    columns.forEach(function (name) {
+      const lane = document.createElement("div");
+      lane.className = "lane";
+      lane.dataset.column = name;
+
+      const inLane = tickets.filter(t => (t.status || columns[0]) === name);
+      const head = document.createElement("div");
+      head.className = "lane-head";
+      head.innerHTML = `<span>${escapeHtml(name)}</span><span class="count">${inLane.length}</span>`;
+      lane.appendChild(head);
+
+      if (!inLane.length) {
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "Drop here";
+        lane.appendChild(empty);
+      } else {
+        inLane.forEach(t => lane.appendChild(cardNode(t)));
+      }
+
+      lane.addEventListener("dragover", function (event) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+        lane.classList.add("over");
+      });
+      lane.addEventListener("dragleave", function () { lane.classList.remove("over"); });
+      lane.addEventListener("drop", function (event) {
+        event.preventDefault();
+        lane.classList.remove("over");
+        if (dragged) move(dragged, name);
+      });
+
+      board.appendChild(lane);
+    });
+
+    syncHeight();
+  }
+
+  window.addEventListener("message", function (event) {
+    if (!event.data || event.data.type !== "streamlit:render") return;
+    const args = event.data.args || {};
+    // Redrawing mid-drag would drop the card being carried.
+    if (dragged) return;
+    columns = args.columns || [];
+    tickets = (args.tickets || []).map(t => Object.assign({}, t));
+    showSprint = Boolean(args.show_sprint);
+    render();
+  });
+
+  post("streamlit:componentReady", { apiVersion: 1 });
+  syncHeight();
+  window.addEventListener("resize", syncHeight);
+})();
+</script>
+</body>
+</html>
