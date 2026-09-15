@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "proxima": {
+      "command": "./mcp.sh",
+      "args": [],
+      "env": {}
+    }
+  }
+}

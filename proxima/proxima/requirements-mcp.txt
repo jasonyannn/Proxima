@@ -1,0 +1,5 @@
+# Only needed to run Proxima as an MCP server (./mcp.sh). The Streamlit app
+# does not import any of this, so it stays out of requirements.txt — an editor
+# integration should not add a dependency to the thing being integrated.
+mcp>=2.2.0
+uvicorn>=0.30.0

@@ -38,6 +38,29 @@ analysers work fully, since neither depends on the model.
 
 ---
 
+## Using it from your editor
+
+Proxima also runs as an [MCP](https://modelcontextprotocol.io) server, so the
+backlog, the competitor comparison and the copyright check are available to VS
+Code, Claude, Codex and anything else that speaks the protocol — while you are
+writing the code they describe.
+
+```bash
+./mcp.sh                       # stdio, what editors launch
+./mcp.sh --transport http      # http://127.0.0.1:8765/mcp
+./mcp.sh --read-only           # analysis only, nothing can write
+```
+
+VS Code and Claude Code are configured already ([.vscode/mcp.json](.vscode/mcp.json),
+[.mcp.json](.mcp.json)). **[docs/mcp.md](docs/mcp.md)** has the rest: Claude
+Desktop, Codex, running alongside the Figma and Supabase servers, what it would
+take to host it, and the auth on the HTTP transport.
+
+Like `run.sh`, `mcp.sh` bootstraps its own virtualenv — a client can point at it
+on a machine where nobody has run the app yet.
+
+---
+
 ## What's in the app
 
 Three tabs:
@@ -101,8 +124,11 @@ the history table.
 
 ```
 run.sh                      bootstrap + launch
+mcp.sh                      bootstrap + launch the MCP server
 package.json                npm wrappers so `npm run dev` works
+.mcp.json                   Claude Code picks this up from the repo root
 .streamlit/config.toml      headless mode (skips the first-run email prompt)
+docs/mcp.md                 connecting the MCP server to each client
 proxima/
   product_manager.py        standalone backlog/prioritisation helpers
   tests/test_analysis.py    30 tests, incl. the similarity calibration set
@@ -115,6 +141,7 @@ proxima/
     competitors.py          coverage matrix, gap analysis, threat scoring
     copyright_analyzer.py   IP risk model
     seed_data.py            sample competitor catalogue
+    mcp_server/             the same analysers, over MCP
     data/product.db         created on first run
 ```
 
