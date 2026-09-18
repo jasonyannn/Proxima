@@ -110,22 +110,79 @@ def claim_legacy(owner: str | int) -> bool:
     return True
 
 
+# ----------------------------------------------------------------- projects
+
+# A project is a folder of chats. It exists for the same reason workspaces do:
+# a person thinking about one product holds that thought across a dozen
+# conversations, and the agent should be able to remember *that* product's
+# history without dragging in every unrelated chat on the machine.
+#
+# Two things hang off a project:
+#   - a brief, written once, always in the prompt for its chats;
+#   - a recall scope, which decides how far back the agent is allowed to look.
+SCOPES = ("off", "project", "all")
+DEFAULT_SCOPE = "project"
+
+SCOPE_LABELS = {
+    "off": "This chat only",
+    "project": "This project",
+    "all": "All my chats",
+}
+
+
+def normalise_scope(value: Any) -> str:
+    """Accept whatever is on disk and return a scope the app knows.
+
+    Before projects existed the setting was a bool ("Learn from my chats"), so
+    True and False are read as their nearest equivalents rather than discarded.
+    """
+    if value is True:
+        return "all"
+    if value is False:
+        return "off"
+    text = str(value or "").strip().lower()
+    return text if text in SCOPES else DEFAULT_SCOPE
+
+
+def chats_in_project(chats: dict[str, Any], project_id: str | None) -> dict[str, Any]:
+    """The chats filed under one project, in their existing order.
+
+    ``None`` selects the unfiled ones, which is what a chat gets before anyone
+    has put it anywhere.
+    """
+    return {
+        chat_id: chat
+        for chat_id, chat in chats.items()
+        if (chat.get("project_id") or None) == (project_id or None)
+    }
+
+
 # ----------------------------------------------------------------- sessions
 
-def load_sessions(owner: str | int) -> tuple[dict[str, Any], int]:
-    """Restore the saved chats, newest numbering intact.
+def _blank_state() -> dict[str, Any]:
+    return {
+        "chats": {},
+        "counter": 0,
+        "projects": {},
+        "project_counter": 0,
+        "scope": DEFAULT_SCOPE,
+    }
 
-    Returns the chats and the highest ordinal seen, so new chats keep counting
-    up rather than colliding with one that already exists.
+
+def load_state(owner: str | int) -> dict[str, Any]:
+    """Everything one account has on disk: chats, projects, and the scope.
+
+    One reader for one file. The chats and the projects that group them are
+    written together, so reading them apart would let the two drift.
     """
     path = sessions_file(owner)
     if not path.exists():
-        return {}, 0
+        return _blank_state()
 
     try:
         raw = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError):
-        return {}, 0
+        return _blank_state()
 
     chats: dict[str, Any] = {}
     highest = 0
@@ -144,25 +201,97 @@ def load_sessions(owner: str | int) -> tuple[dict[str, Any], int]:
             "created": created,
             "title": chat.get("title") or "",
             "ordinal": ordinal,
+            # Absent for every chat written before projects existed, which is
+            # exactly right: they start unfiled.
+            "project_id": chat.get("project_id") or None,
         }
 
-    return chats, max(highest, int(raw.get("counter") or 0))
+    projects: dict[str, Any] = {}
+    project_highest = 0
+    known = {c.get("project_id") for c in chats.values()}
+    for project_id, project in (raw.get("projects") or {}).items():
+        if not isinstance(project, dict):
+            continue
+        created = project.get("created")
+        try:
+            created = datetime.fromisoformat(created) if created else datetime.now()
+        except (TypeError, ValueError):
+            created = datetime.now()
+        ordinal = int(project.get("ordinal") or 0)
+        project_highest = max(project_highest, ordinal)
+        projects[project_id] = {
+            "name": project.get("name") or "",
+            "brief": project.get("brief") or "",
+            "created": created,
+            "ordinal": ordinal,
+        }
+
+    # A chat pointing at a project that is no longer there would vanish from
+    # the sidebar, which lists chats by project. Unfile it instead.
+    for chat in chats.values():
+        if chat["project_id"] and chat["project_id"] not in projects:
+            chat["project_id"] = None
+
+    return {
+        "chats": chats,
+        "counter": max(highest, int(raw.get("counter") or 0)),
+        "projects": projects,
+        "project_counter": max(project_highest, int(raw.get("project_counter") or 0)),
+        # "recall" was the old boolean toggle; normalise_scope reads both.
+        "scope": normalise_scope(
+            raw.get("memory_scope", raw.get("recall", DEFAULT_SCOPE))
+        ),
+    }
 
 
-def save_sessions(chats: dict[str, Any], counter: int, owner: str | int) -> None:
-    """Write the chats back. Small and rewritten whole — there are tens, not
-    thousands, and a partial write would lose a conversation."""
+def load_sessions(owner: str | int) -> tuple[dict[str, Any], int]:
+    """The chats and the highest ordinal seen.
+
+    Kept alongside load_state because the MCP server wants nothing else, and
+    should not have to know that projects exist to find a workspace file.
+    """
+    state = load_state(owner)
+    return state["chats"], state["counter"]
+
+
+def _iso(value: Any) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value or "")
+
+
+def save_state(
+    chats: dict[str, Any],
+    counter: int,
+    owner: str | int,
+    projects: dict[str, Any] | None = None,
+    project_counter: int = 0,
+    scope: str = DEFAULT_SCOPE,
+) -> None:
+    """Write chats, projects and the recall scope back.
+
+    Small and rewritten whole — there are tens, not thousands, and a partial
+    write would lose a conversation.
+    """
     home(owner).mkdir(parents=True, exist_ok=True)
     payload = {
         "counter": counter,
+        "project_counter": project_counter,
+        "memory_scope": normalise_scope(scope),
+        "projects": {
+            project_id: {
+                "name": project.get("name") or "",
+                "brief": project.get("brief") or "",
+                "created": _iso(project.get("created")),
+                "ordinal": project.get("ordinal") or 0,
+            }
+            for project_id, project in (projects or {}).items()
+        },
         "chats": {
             chat_id: {
                 "messages": chat.get("messages") or [],
-                "created": (chat.get("created") or datetime.now()).isoformat()
-                if isinstance(chat.get("created"), datetime)
-                else str(chat.get("created") or ""),
+                "created": _iso(chat.get("created") or datetime.now()),
                 "title": chat.get("title") or "",
                 "ordinal": chat.get("ordinal") or 0,
+                "project_id": chat.get("project_id") or None,
             }
             for chat_id, chat in chats.items()
         },
@@ -176,3 +305,20 @@ def save_sessions(chats: dict[str, Any], counter: int, owner: str | int) -> None
     except OSError:
         # Losing the transcript on disk is not worth taking the app down for.
         tmp.unlink(missing_ok=True)
+
+
+def save_sessions(chats: dict[str, Any], counter: int, owner: str | int) -> None:
+    """Write the chats without touching the projects already on disk.
+
+    For callers that only know about chats. Reading the projects back first is
+    what stops a chat-only save from deleting them.
+    """
+    existing = load_state(owner)
+    save_state(
+        chats,
+        counter,
+        owner,
+        projects=existing["projects"],
+        project_counter=existing["project_counter"],
+        scope=existing["scope"],
+    )

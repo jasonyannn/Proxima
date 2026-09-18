@@ -21,7 +21,7 @@ try:
     from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from .prompt_box import prompt_box
     from .kanban import kanban
-    from . import theme, voice, workspace, landing
+    from . import theme, voice, workspace, landing, memory
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
@@ -35,7 +35,7 @@ except ImportError:  # pragma: no cover
     from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from prompt_box import prompt_box
     from kanban import kanban
-    import theme, voice, workspace, landing
+    import theme, voice, workspace, landing, memory
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -131,8 +131,17 @@ def chat_title(chat_id: str) -> str:
     return f"Chat {chat.get('ordinal', 1):02d}"
 
 
-def new_chat() -> str:
-    """Start a chat and make it current."""
+def new_chat(project_id: str | None = None) -> str:
+    """Start a chat and make it current.
+
+    With no project named it inherits the open chat's — pressing New chat while
+    you are inside a project means another chat about that same product, not a
+    stray one that falls out of it.
+    """
+    if project_id is None:
+        current = st.session_state.chats.get(st.session_state.get("current_chat_id"))
+        project_id = (current or {}).get("project_id")
+
     st.session_state.chat_counter = st.session_state.get("chat_counter", 0) + 1
     chat_id = f"chat_{st.session_state.chat_counter}_{datetime.now().timestamp()}"
     st.session_state.chats[chat_id] = {
@@ -141,6 +150,7 @@ def new_chat() -> str:
         "title": "",
         # Fixed at creation so deleting a chat never renumbers the others.
         "ordinal": st.session_state.chat_counter,
+        "project_id": project_id or None,
     }
     st.session_state.current_chat_id = chat_id
     remember_sessions()
@@ -159,13 +169,80 @@ def delete_chat(chat_id: str) -> None:
     remember_sessions()
 
 
+# ---------------------------------------------------------------- projects
+
+def new_project(name: str = "") -> str:
+    """Create a project and return its id."""
+    st.session_state.project_counter = st.session_state.get("project_counter", 0) + 1
+    ordinal = st.session_state.project_counter
+    project_id = f"proj_{ordinal}_{datetime.now().timestamp()}"
+    st.session_state.projects[project_id] = {
+        "name": (name or "").strip() or f"Project {ordinal:02d}",
+        "brief": "",
+        "created": datetime.now(),
+        "ordinal": ordinal,
+    }
+    remember_sessions()
+    return project_id
+
+
+def delete_project(project_id: str, drop_chats: bool = False) -> None:
+    """Remove a project. Its chats are unfiled unless asked for otherwise.
+
+    Deleting a folder should not delete the work inside it by default — the
+    chats carry the workspaces, and those hold everything anyone saved.
+    """
+    st.session_state.projects.pop(project_id, None)
+    for chat_id in list(st.session_state.chats):
+        if st.session_state.chats[chat_id].get("project_id") != project_id:
+            continue
+        if drop_chats:
+            delete_chat(chat_id)
+        else:
+            st.session_state.chats[chat_id]["project_id"] = None
+    remember_sessions()
+
+
+def move_chat(chat_id: str, project_id: str | None) -> None:
+    """File a chat under a project, or unfile it with None."""
+    chat = st.session_state.chats.get(chat_id)
+    if chat is None:
+        return
+    chat["project_id"] = project_id or None
+    remember_sessions()
+
+
+def project_of(chat_id: str | None) -> dict | None:
+    """The project a chat belongs to, with its id folded in, or None.
+
+    The id rides along because memory.py keys the recall scope off it and
+    should not have to be handed the dict and the id separately.
+    """
+    chat = st.session_state.chats.get(chat_id or "")
+    project_id = (chat or {}).get("project_id")
+    project = st.session_state.get("projects", {}).get(project_id or "")
+    if not project:
+        return None
+    return {**project, "id": project_id}
+
+
+def current_project() -> dict | None:
+    return project_of(st.session_state.get("current_chat_id"))
+
+
 def remember_sessions() -> None:
-    """Persist the chats. A workspace outlives the session that opened it, so
-    the chat it belongs to has to outlive it too."""
-    workspace.save_sessions(
+    """Persist the chats, the projects grouping them, and the recall scope.
+
+    A workspace outlives the session that opened it, so the chat it belongs to
+    has to outlive it too — and now so does the project it is filed under.
+    """
+    workspace.save_state(
         st.session_state.get("chats", {}),
         st.session_state.get("chat_counter", 0),
         USER["id"],
+        projects=st.session_state.get("projects", {}),
+        project_counter=st.session_state.get("project_counter", 0),
+        scope=st.session_state.get("setting_memory_scope", workspace.DEFAULT_SCOPE),
     )
 
 
@@ -449,48 +526,22 @@ LANGUAGES = [
 ]
 
 
-def recall_digest(limit: int = 6) -> str:
-    """Condense earlier sessions into a short block for the system prompt.
-
-    Only the other chats — the active one is already passed as conversation
-    history — and only the most recent exchanges, so the prompt stays small.
-    """
-    lines = []
-    for chat_id, chat in reversed(list(st.session_state.chats.items())):
-        if chat_id == st.session_state.current_chat_id:
-            continue
-        for exchange in chat["messages"][-2:]:
-            asked = exchange.get("user", "").strip().replace("\n", " ")
-            # An exchange still waiting on its reply carries agent=None.
-            replied = (exchange.get("agent") or "").strip().replace("\n", " ")
-            if asked:
-                lines.append(f"- They said: {asked[:160]} | You answered: {replied[:160]}")
-        if len(lines) >= limit:
-            break
-    return "\n".join(lines[:limit])
-
-
 def tuned_system_prompt() -> str:
-    """SYSTEM_PROMPT plus whatever the settings panel asks for."""
-    blocks = [SYSTEM_PROMPT]
+    """SYSTEM_PROMPT plus whatever the settings panel and the project add.
 
-    language = st.session_state.get("setting_language", "English")
-    if language != "English":
-        blocks.append(
-            f"Always write your replies in {language}, even when the user writes "
-            "to you in another language. Keep product terminology accurate."
-        )
-
-    if st.session_state.get("setting_recall"):
-        digest = recall_digest()
-        if digest:
-            blocks.append(
-                "Context from this user's earlier sessions — use it to stay "
-                "consistent, and do not repeat advice you have already given:\n"
-                + digest
-            )
-
-    return "\n\n".join(blocks)
+    The assembly lives in memory.py; this only reads session state and hands it
+    over. Keeping the two apart is what makes the recall rules testable without
+    standing a Streamlit session up.
+    """
+    return memory.compose_system_prompt(
+        SYSTEM_PROMPT,
+        language=st.session_state.get("setting_language", "English"),
+        scope=st.session_state.get("setting_memory_scope", workspace.DEFAULT_SCOPE),
+        project=current_project(),
+        chats=st.session_state.get("chats", {}),
+        current_chat_id=st.session_state.get("current_chat_id"),
+        projects=st.session_state.get("projects", {}),
+    )
 
 
 def capture_speech():
