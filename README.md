@@ -63,7 +63,7 @@ on a machine where nobody has run the app yet.
 
 ## What's in the app
 
-Three tabs:
+Five tabs — Chat, Features, Board, and these two analysers:
 
 ### 💬 Chat
 The original agent. Describe customer feedback in plain language; it classifies
@@ -120,6 +120,62 @@ the history table.
 
 ---
 
+## Projects and memory
+
+A chat is one conversation about one product. A **project** is a folder of them,
+and it is what lets Proxima remember a product across a dozen sessions without
+mixing it up with an unrelated one.
+
+Create a project from the sidebar; chats inside it are listed under it, and
+`New chat` while a project is open starts another chat in that project. Any chat
+can be moved between projects from its `⋮` menu.
+
+### The three layers of memory
+
+They are deliberately different things, and only the third one needs a setting:
+
+| Layer | What it is | Scope |
+| --- | --- | --- |
+| **Workspace** | features, competitors, IP assessments | one SQLite file per chat, written only when you click save |
+| **Project memory** | a short brief you write about the product | every chat in the project, every prompt |
+| **Recall** | a digest of what was said in other chats | whatever the Memory setting allows |
+
+**Project memory** is the text box inside each project in the sidebar. Write what
+the product is once — "a no-code shop builder for independent makers, mobile
+first" — and it goes into the prompt for every chat in that project, above
+anything recalled from a transcript. It is durable and exact, which is why it
+outranks the digest when the two disagree.
+
+**Recall** is the lossy one, and the Memory setting decides how far it reaches:
+
+- **This chat only** — nothing from your other conversations reaches the model.
+- **This project** *(default)* — the brief, plus a digest of the other chats
+  filed under the same project.
+- **All my chats** — a digest of every chat on the account, each line tagged
+  with the project it came from.
+
+The default is deliberate. A digest of every conversation on the machine is how
+an agent starts answering a question about a shop builder with advice about last
+week's analytics tool: nothing tells the model which context it is in, so it
+averages them. Chats in a project are about the same product by construction, so
+their history is evidence rather than noise. "All my chats" is still there for
+when the breadth is what you want.
+
+Two rules that are enforced rather than hoped for, and covered by tests in
+`tests/test_projects.py`:
+
+- The open chat is never in its own digest — it is already passed as
+  conversation history, and repeating it spends context to say it twice.
+- "This project" on a chat that is not in a project recalls **nothing**. It does
+  not quietly fall back to everything; the sidebar tells you why it is empty.
+
+Recall is capped at six exchanges and ~1800 characters, whichever comes first.
+Local models run with a small context window, and recall is the first thing that
+should give.
+
+Everything here stays on this machine. None of it changes the model's weights —
+it is recall, not training.
+
 ## Layout
 
 ```
@@ -132,10 +188,13 @@ docs/mcp.md                 connecting the MCP server to each client
 proxima/
   product_manager.py        standalone backlog/prioritisation helpers
   tests/test_analysis.py    30 tests, incl. the similarity calibration set
+  tests/test_projects.py    25 tests for projects and memory scoping
   proxima/
-    app.py                  Streamlit UI (3 tabs)
+    app.py                  Streamlit UI (5 tabs)
     agent.py                intent classification + Ollama client
     database.py             SQLite schema and CRUD
+    workspace.py            per-chat workspaces, projects, persistence
+    memory.py               recall scoping + system-prompt assembly
     prompt.py               system prompt
     textsim.py              similarity engine (concept / expression / name)
     competitors.py          coverage matrix, gap analysis, threat scoring
