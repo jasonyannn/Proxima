@@ -21,7 +21,7 @@ The script is self-bootstrapping: it creates `.venv`, installs dependencies from
 and launches Streamlit.
 
 ```bash
-npm test             # run the analyser test suite (30 tests)
+npm test             # run every suite (119 tests)
 ```
 
 ### Optional: the LLM
@@ -244,6 +244,74 @@ never cycled or generated. The palette is validated against the chart surface
 Charts ship with a table view, and a single series carries no legend because the
 title names it.
 
+## Accessibility and settings
+
+The rule the settings panel is built to: **a setting that does not change
+rendering is worse than no setting at all.** A switch labelled "colour blind
+mode" that only stores a flag tells someone their need has been handled when it
+has not. Every option below reaches the stylesheet, the chart palette, or the
+prompt — and there is a test asserting each one produces an artefact.
+
+Everything is per-account and stored on disk, because an accessibility choice
+that resets when you restart the app is its own kind of failure.
+
+### Seeing
+
+| Setting | What it does |
+| --- | --- |
+| **Text size** | Moves the root font size (14 / 16 / 18 / 21px); Streamlit's own spacing is in `rem`, so the whole UI scales together |
+| **Contrast** | Redefines the theme's colour tokens. Every ink/ground pair clears WCAG AA — the test computes the ratios rather than trusting the constants |
+| **Reading font** | Swaps the interface to Lexend |
+| **Chart colours** | Default / Maximum separation / One hue + labels — see below |
+| **Never use colour alone** | Prints values on every mark, dashes each line, opens the table under every chart |
+
+**Chart colours** is the one worth explaining. The default palette *already*
+clears the colour-vision separation target for neighbouring marks, so a
+different set of hues is not the win people expect. The two things that actually
+help are:
+
+- **Maximum separation** caps a chart at three coloured series and folds the
+  rest into "Other". Three is not a round number — it is how many of these hues
+  stay apart under protanopia and deuteranopia when any two marks can sit side
+  by side. A fourth fails that test, which is measurable: run
+  `validate_palette.js` on four slots with `--pairs all` and watch it drop to
+  ΔE 4.8.
+- **One hue + labels** carries identity in lightness alone, which survives every
+  kind of colour blindness, and forces the values onto the marks because with
+  one hue the colour is carrying nothing.
+
+### Moving
+
+**Motion** (reduced stops animations, transitions and the typing cursor on
+answers), **larger click targets** (44px, the WCAG 2.5.5 size), and **visible
+keyboard focus** (a high-visibility ring on whatever Tab has landed on).
+
+### Hearing
+
+The honest answer is that there is very little to do here: **Proxima plays no
+audio and never puts information in sound alone**, so nothing needs captions.
+Voice input is optional and lands in the box as editable text. The one real
+setting is **alerts stay until dismissed** — a toast fades after a few seconds,
+which is a deadline on reading, and some people cannot meet it.
+
+### What is deliberately not a setting
+
+Written down rather than shipped as a switch that does nothing:
+
+- **Screen-reader labelling** and **tab order** — Streamlit owns the widget DOM;
+  the app cannot add ARIA to markup it does not render. What it *can* do is here
+  instead: every chart has a table view, every risk colour ships with a word,
+  and every diagram keeps its source.
+- **Captions** — there is no audio to caption.
+- **A colour-blindness filter over the UI** — that is a demo, not an
+  accommodation. The palette and the second encoding channel are the parts that
+  change what a reader can actually tell apart.
+
+### Ordinary settings
+
+Reply language, **answer length** (brief / balanced / detailed, which reaches
+the system prompt), prompt assist, and the memory scope described above.
+
 ## Layout
 
 ```
@@ -258,6 +326,7 @@ proxima/
   tests/test_analysis.py    30 tests, incl. the similarity calibration set
   tests/test_projects.py    25 tests for projects and memory scoping
   tests/test_visuals.py     37 tests for chart/table/diagram blocks
+  tests/test_accessibility.py  27 tests, incl. computed WCAG ratios
   proxima/
     app.py                  Streamlit UI (5 tabs)
     agent.py                intent classification + Ollama client
@@ -265,6 +334,7 @@ proxima/
     workspace.py            per-chat workspaces, projects, persistence
     memory.py               recall scoping + system-prompt assembly
     visuals.py              chart/table/diagram blocks + intent directives
+    accessibility.py        settings that change CSS, palette and prompt
     prompt.py               system prompt
     textsim.py              similarity engine (concept / expression / name)
     competitors.py          coverage matrix, gap analysis, threat scoring

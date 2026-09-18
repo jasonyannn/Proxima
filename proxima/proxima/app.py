@@ -22,7 +22,7 @@ try:
     from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from .prompt_box import prompt_box
     from .kanban import kanban
-    from . import theme, voice, workspace, landing, memory, visuals
+    from . import theme, voice, workspace, landing, memory, visuals, accessibility
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from prompt_box import prompt_box
     from kanban import kanban
-    import theme, voice, workspace, landing, memory, visuals
+    import theme, voice, workspace, landing, memory, visuals, accessibility
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -231,6 +231,20 @@ def current_project() -> dict | None:
     return project_of(st.session_state.get("current_chat_id"))
 
 
+def current_settings() -> dict:
+    """The accessibility and answer-style settings, as chosen right now.
+
+    Read back out of the widgets rather than kept in a parallel dict, so there
+    is one source of truth and no way for the two to disagree.
+    """
+    raw = {key: st.session_state.get(f"set_{key}") for key in accessibility.DEFAULTS}
+    # The switch is phrased as "never use colour alone", which is the opposite
+    # of how the setting is stored — a toggle reads better as the thing you turn
+    # on than as the thing you turn off.
+    raw["colour_alone"] = not st.session_state.get("set_colour_alone_inverted", False)
+    return accessibility.normalise(raw)
+
+
 def remember_sessions() -> None:
     """Persist the chats, the projects grouping them, and the recall scope.
 
@@ -244,6 +258,7 @@ def remember_sessions() -> None:
         projects=st.session_state.get("projects", {}),
         project_counter=st.session_state.get("project_counter", 0),
         scope=st.session_state.get("setting_memory_scope", workspace.DEFAULT_SCOPE),
+        settings=current_settings(),
     )
 
 
@@ -585,12 +600,13 @@ def render_reply(text: str, key: str = "") -> None:
         elif kind == "chart":
             if payload["title"]:
                 st.markdown(f"**{payload['title']}**")
-            st.altair_chart(visuals.to_altair(payload), width="stretch")
+            look = accessibility.appearance(current_settings())
+            st.altair_chart(visuals.to_altair(payload, look), width="stretch")
             if payload["note"]:
                 st.caption(payload["note"])
             # Identity is never colour-alone, and a chart is never the only way
             # to read the numbers.
-            with st.expander("Table view"):
+            with st.expander("Table view", expanded=look["label_always"]):
                 frame = pd.DataFrame(payload["rows"])
                 st.dataframe(frame, width="stretch", hide_index=True)
 
@@ -622,6 +638,7 @@ def tuned_system_prompt() -> str:
         SYSTEM_PROMPT,
         language=st.session_state.get("setting_language", "English"),
         scope=st.session_state.get("setting_memory_scope", workspace.DEFAULT_SCOPE),
+        style=accessibility.reply_note(current_settings()),
         project=current_project(),
         chats=st.session_state.get("chats", {}),
         current_chat_id=st.session_state.get("current_chat_id"),
@@ -671,6 +688,11 @@ if "chats" not in st.session_state:
     st.session_state.project_counter = state["project_counter"]
     # Written before the widget exists, which is how Streamlit seeds one.
     st.session_state.setting_memory_scope = state["scope"]
+    for key, value in state["settings"].items():
+        st.session_state.setdefault(f"set_{key}", value)
+    st.session_state.setdefault(
+        "set_colour_alone_inverted", not state["settings"]["colour_alone"]
+    )
 
     # Everything filed before accounts and workspaces existed goes to the first
     # account to sign in — whoever was using this machine already. Claiming it
@@ -692,6 +714,12 @@ if "current_chat_id" not in st.session_state:
 if not st.session_state.chats or st.session_state.current_chat_id is None:
     new_chat()
 
+# The theme is injected before sign-in, when nobody's settings are known yet.
+# This is the second pass: same custom properties, overridden for this account.
+overrides = accessibility.css(current_settings())
+if overrides:
+    st.markdown(f"<style>{overrides}</style>", unsafe_allow_html=True)
+
 # Everything below reads the open chat's workspace, never a shared one.
 db = current_db()
 competitor_analyzer = CompetitorAnalyzer(db)
@@ -707,8 +735,10 @@ with st.sidebar:
         get_database.clear()
         for key in ("user", "chats", "current_chat_id", "chat_counter",
                     "chat_profile", "projects", "project_counter",
-                    "setting_memory_scope"):
+                    "setting_memory_scope", "set_colour_alone_inverted"):
             st.session_state.pop(key, None)
+        for key in accessibility.DEFAULTS:
+            st.session_state.pop(f"set_{key}", None)
         st.rerun()
 
     theme.section("Projects", index="01")
@@ -864,6 +894,16 @@ with st.sidebar:
     )
 
     st.radio(
+        "Answer length",
+        options=list(accessibility.CHOICES["reply_length"]),
+        format_func=lambda v: accessibility.LABELS["reply_length"][v],
+        key="set_reply_length",
+        on_change=remember_sessions,
+        horizontal=True,
+        help="How much working Proxima shows.",
+    )
+
+    st.radio(
         "Memory",
         options=list(workspace.SCOPES),
         format_func=lambda scope: workspace.SCOPE_LABELS[scope],
@@ -914,6 +954,112 @@ with st.sidebar:
         "nothing and never leaves this machine. Undo is always one click away."
     )
 
+    with st.expander("Accessibility"):
+        st.caption("**Seeing**")
+        st.radio(
+            "Text size",
+            options=list(accessibility.CHOICES["text_scale"]),
+            format_func=lambda v: accessibility.LABELS["text_scale"][v],
+            key="set_text_scale",
+            on_change=remember_sessions,
+            horizontal=True,
+        )
+        st.radio(
+            "Contrast",
+            options=list(accessibility.CHOICES["contrast"]),
+            format_func=lambda v: accessibility.LABELS["contrast"][v],
+            key="set_contrast",
+            on_change=remember_sessions,
+            horizontal=True,
+            help="Raises text and hairlines above the WCAG AA ratio everywhere.",
+        )
+        st.toggle(
+            "Reading font",
+            key="set_reading_font",
+            on_change=remember_sessions,
+            help="Swaps the interface to Lexend, designed for reading proficiency.",
+        )
+
+        st.radio(
+            "Chart colours",
+            options=list(accessibility.CHOICES["chart_colour"]),
+            format_func=lambda v: accessibility.LABELS["chart_colour"][v],
+            key="set_chart_colour",
+            on_change=remember_sessions,
+        )
+        choice = st.session_state.get("set_chart_colour", "default")
+        if choice == "separated":
+            st.caption(
+                f"Caps a chart at {accessibility.SEPARATED_CAP} coloured series "
+                "and folds the rest into “Other”. Those three are the ones that "
+                "stay apart under protanopia and deuteranopia when any two marks "
+                "can sit side by side; a fourth hue does not."
+            )
+        elif choice == "one_hue":
+            st.caption(
+                "Identity by lightness alone, which survives every kind of "
+                "colour blindness. Values are printed on the marks, because "
+                "with one hue the colour is carrying nothing."
+            )
+        else:
+            st.caption(
+                "The measured palette: it already clears the colour-vision "
+                "separation target for neighbouring marks."
+            )
+
+        st.toggle(
+            "Never use colour alone",
+            value=not st.session_state.get("set_colour_alone", True),
+            key="set_colour_alone_inverted",
+            on_change=remember_sessions,
+            help="Prints values on every mark, dashes each line, and opens the "
+                 "table under each chart.",
+        )
+
+        st.caption("**Moving**")
+        st.radio(
+            "Motion",
+            options=list(accessibility.CHOICES["motion"]),
+            format_func=lambda v: accessibility.LABELS["motion"][v],
+            key="set_motion",
+            on_change=remember_sessions,
+            horizontal=True,
+            help="Reduced stops animations and the typing cursor on answers.",
+        )
+        st.toggle(
+            "Larger click targets",
+            key="set_big_targets",
+            on_change=remember_sessions,
+            help="Raises every button and input to the 44px WCAG target size.",
+        )
+        st.toggle(
+            "Visible keyboard focus",
+            key="set_focus_ring",
+            on_change=remember_sessions,
+            help="Draws a high-visibility ring around whatever Tab has landed on.",
+        )
+
+        st.caption("**Hearing and attention**")
+        st.toggle(
+            "Alerts stay until dismissed",
+            key="set_persistent_alerts",
+            on_change=remember_sessions,
+            help="Confirmations stay on screen instead of fading after a moment.",
+        )
+        st.caption(
+            "Proxima plays no audio and never puts information in sound alone, "
+            "so nothing here needs captions. Voice input is optional and lands "
+            "in the box as text you can edit before sending."
+        )
+
+        st.caption(
+            "Not settings, because they would be labels on nothing: Streamlit "
+            "owns the widget DOM, so the app cannot add screen-reader labelling "
+            "or change tab order. What it can do instead is here — every chart "
+            "has a table, every risk colour ships with a word, and every "
+            "diagram keeps its source."
+        )
+
 theme.hero(
     title="Product Management Agent",
     subtitle="Turn customer feedback into structured product decisions.",
@@ -940,7 +1086,21 @@ with chat_tab:
     # Set by a save chip on the run before this one.
     toast = st.session_state.pop("save_toast", None)
     if toast:
-        st.toast(toast, icon="✅")
+        if current_settings()["persistent_alerts"]:
+            # A toast fades after a few seconds. That is a deadline on reading,
+            # which is exactly what some people cannot meet.
+            st.session_state.setdefault("alerts", []).append(toast)
+        else:
+            st.toast(toast, icon="✅")
+
+    alerts = st.session_state.get("alerts") or []
+    if alerts:
+        for position, message in enumerate(alerts):
+            row, dismiss = st.columns([8, 1], gap="small")
+            row.success(message, icon="✅")
+            if dismiss.button("✕", key=f"alert{position}", help="Dismiss"):
+                st.session_state.alerts.pop(position)
+                st.rerun()
 
     # An exchange with agent=None is one whose question is already on screen but
     # whose reply has not been asked for yet. It keeps a slot in the transcript
@@ -2024,7 +2184,8 @@ if pending is not None:
         # to the browser.
         if len(written) - painted >= 24:
             painted = len(written)
-            slot.markdown(visuals.strip_blocks(written) + " ▍")
+            cursor = "" if current_settings()["motion"] == "reduced" else " ▍"
+            slot.markdown(visuals.strip_blocks(written) + cursor)
 
     pending_item["agent"] = written
     slot.empty()

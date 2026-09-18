@@ -189,6 +189,7 @@ def recall_block(digest: str, scope: str) -> str:
 def compose_system_prompt(
     base: str,
     language: str = "English",
+    style: str = "",
     scope: str = DEFAULT_SCOPE,
     project: dict[str, Any] | None = None,
     chats: dict[str, Any] | None = None,
@@ -207,6 +208,11 @@ def compose_system_prompt(
             f"Always write your replies in {language}, even when the user writes "
             "to you in another language. Keep product terminology accurate."
         )
+
+    # How much working to show. Sits above the project brief because it governs
+    # the shape of the answer rather than its subject.
+    if style:
+        blocks.append(style)
 
     brief = project_block(project)
     if brief:

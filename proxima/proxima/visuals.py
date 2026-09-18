@@ -280,7 +280,29 @@ def strip_blocks(reply: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def to_altair(spec: dict):
+
+def fold_series(spec: dict, cap: int) -> dict:
+    """Keep the first ``cap`` series and gather the rest into "Other".
+
+    Never a generated hue for series nine: past the palette the tail is folded,
+    because a hue invented to fill a slot is indistinguishable from one already
+    in use under colour blindness.
+    """
+    series = spec.get("series") or []
+    if cap <= 0 or len(series) <= cap:
+        return spec
+
+    keep = set(series[: cap - 1])
+    rows = []
+    for row in spec["rows"]:
+        name = row.get("series")
+        if name and name not in keep:
+            row = {**row, "series": "Other"}
+        rows.append(row)
+    return {**spec, "rows": rows, "series": series[: cap - 1] + ["Other"]}
+
+
+def to_altair(spec: dict, appearance: dict | None = None):
     """An Altair chart for a validated spec.
 
     Imported lazily: parsing is the part that has to work everywhere (the tests
@@ -289,6 +311,15 @@ def to_altair(spec: dict):
     import altair as alt
     import pandas as pd
 
+    appearance = appearance or {}
+    hues = appearance.get("palette") or CATEGORICAL
+    cap = int(appearance.get("cap") or len(hues))
+    # Asked for by a reader who cannot rely on colour — and forced on whenever
+    # the palette itself carries no identity.
+    always_label = bool(appearance.get("label_always"))
+    dashed = bool(appearance.get("dashed"))
+
+    spec = fold_series(spec, cap)
     frame = pd.DataFrame(spec["rows"])
     multi = bool(spec["series"])
     unit = spec["unit"]
@@ -304,13 +335,13 @@ def to_altair(spec: dict):
             "series:N",
             scale=alt.Scale(
                 domain=spec["series"],
-                range=CATEGORICAL[: len(spec["series"])] or [ACCENT],
+                range=hues[: len(spec["series"])] or [ACCENT],
             ),
             legend=alt.Legend(title=None, labelColor=DIM, symbolType="square"),
         )
     else:
         # One series: one hue. No legend — the title names it.
-        encode["color"] = alt.value(ACCENT)
+        encode["color"] = alt.value(hues[0] if hues else ACCENT)
 
     quantitative = alt.X(
         "value:Q", title=axis_title, axis=alt.Axis(grid=True, gridColor=GRID)
@@ -337,6 +368,10 @@ def to_altair(spec: dict):
             **encode,
         )
     else:
+        if multi and dashed:
+            encode["strokeDash"] = alt.StrokeDash(
+                "series:N", legend=alt.Legend(title=None, labelColor=DIM)
+            )
         mark = base.mark_line(strokeWidth=2, point=alt.OverlayMarkDef(size=60)).encode(
             x=alt.X("label:N", title=None, sort=None, axis=alt.Axis(labelColor=DIM)),
             y=alt.Y("value:Q", title=axis_title, axis=alt.Axis(grid=True, gridColor=GRID)),
@@ -348,7 +383,8 @@ def to_altair(spec: dict):
     # Direct labels on bars: with few rows the number belongs on the mark, not
     # only on an axis the eye has to travel back to. Text wears a text colour,
     # never the series colour.
-    if spec["kind"] in ("bar", "column") and not multi and len(spec["rows"]) <= 12:
+    labellable = spec["kind"] in ("bar", "column") and (not multi or always_label)
+    if labellable and (always_label or len(spec["rows"]) <= 12):
         label = f"format(datum.value, '.4') + '{unit}'" if unit else "format(datum.value, '.4')"
         text_mark = base.mark_text(color=TEXT, fontSize=11, dx=6 if spec["kind"] == "bar" else 0,
                                    dy=0 if spec["kind"] == "bar" else -8,
@@ -471,6 +507,7 @@ __all__ = [
     "BlockError",
     "chart_spec",
     "directive",
+    "fold_series",
     "has_visuals",
     "parse",
     "strip_blocks",

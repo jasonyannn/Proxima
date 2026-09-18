@@ -28,8 +28,10 @@ from typing import Any
 
 try:
     from .database import DatabaseManager
+    from . import accessibility
 except ImportError:  # pragma: no cover
     from database import DatabaseManager
+    import accessibility
 
 DATA = Path(__file__).resolve().parent / "data"
 USERS = DATA / "users"
@@ -166,6 +168,7 @@ def _blank_state() -> dict[str, Any]:
         "projects": {},
         "project_counter": 0,
         "scope": DEFAULT_SCOPE,
+        "settings": dict(accessibility.DEFAULTS),
     }
 
 
@@ -241,6 +244,9 @@ def load_state(owner: str | int) -> dict[str, Any]:
         "scope": normalise_scope(
             raw.get("memory_scope", raw.get("recall", DEFAULT_SCOPE))
         ),
+        # An accessibility choice is the last thing that should evaporate on a
+        # restart, so it is stored beside the chats rather than in the session.
+        "settings": accessibility.normalise(raw.get("settings")),
     }
 
 
@@ -265,6 +271,7 @@ def save_state(
     projects: dict[str, Any] | None = None,
     project_counter: int = 0,
     scope: str = DEFAULT_SCOPE,
+    settings: dict[str, Any] | None = None,
 ) -> None:
     """Write chats, projects and the recall scope back.
 
@@ -276,6 +283,7 @@ def save_state(
         "counter": counter,
         "project_counter": project_counter,
         "memory_scope": normalise_scope(scope),
+        "settings": accessibility.normalise(settings),
         "projects": {
             project_id: {
                 "name": project.get("name") or "",
@@ -321,4 +329,5 @@ def save_sessions(chats: dict[str, Any], counter: int, owner: str | int) -> None
         projects=existing["projects"],
         project_counter=existing["project_counter"],
         scope=existing["scope"],
+        settings=existing["settings"],
     )
