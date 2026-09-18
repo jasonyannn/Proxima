@@ -8,8 +8,10 @@ from typing import Any, Iterator
 
 try:
     from .database import DatabaseManager
+    from . import visuals
 except ImportError:  # pragma: no cover
     from database import DatabaseManager
+    import visuals
 
 
 class ProximaAgent:
@@ -169,7 +171,15 @@ class ProximaAgent:
         )
 
     def _build_prompt(self, user_input: str, conversation_history: list[dict] = None) -> str:
-        """System prompt, recent turns, then the question."""
+        """System prompt, recent turns, the question, then the visual reminder.
+
+        The reminder goes *after* the question rather than into the system
+        prompt because that is the only place a 3B model reliably acts on it:
+        by the time it starts writing, the formatting rules at the top are
+        thousands of characters behind it, and it falls back on the markdown
+        table it has seen a million of. Measured, not assumed — llama3.2
+        ignored the system-prompt version of this instruction outright.
+        """
         conversation_text = ""
         for msg in (conversation_history or [])[-5:]:  # last few turns for context
             conversation_text += (
@@ -178,7 +188,11 @@ class ProximaAgent:
         if conversation_text:
             conversation_text = "\nPrevious conversation:\n" + conversation_text
 
-        return f"{self.system_prompt}{conversation_text}\n\nUser: {user_input}\n\nAssistant:"
+        reminder = visuals.turn_reminder(user_input)
+        return (
+            f"{self.system_prompt}{conversation_text}"
+            f"\n\nUser: {user_input}\n{reminder}\nAssistant:"
+        )
 
     def research_competitor(self, name: str, limit: int = 10) -> list[dict[str, str]]:
         """What the model remembers of a rival's feature set.

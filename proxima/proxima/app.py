@@ -4,6 +4,7 @@
 import streamlit as st
 import requests
 import hashlib
+import html
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ try:
     from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from .prompt_box import prompt_box
     from .kanban import kanban
-    from . import theme, voice, workspace, landing, memory
+    from . import theme, voice, workspace, landing, memory, visuals
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
@@ -35,7 +36,7 @@ except ImportError:  # pragma: no cover
     from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from prompt_box import prompt_box
     from kanban import kanban
-    import theme, voice, workspace, landing, memory
+    import theme, voice, workspace, landing, memory, visuals
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -526,6 +527,90 @@ LANGUAGES = [
 ]
 
 
+# Mermaid is loaded in the component's own iframe rather than bundled: the app
+# is offline-tolerant everywhere else, and a diagram that fails to draw falls
+# back to its source, which is still readable.
+MERMAID_CDN = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs"
+
+
+def render_diagram(code: str, key: str) -> None:
+    """Draw a mermaid diagram in an iframe, with its source one click away."""
+    lines = max(3, code.count("\n") + 1)
+    height = min(620, 120 + 34 * lines)
+    # The diagram source comes from the model, so it is escaped into the div
+    # rather than concatenated as markup: mermaid reads the node's text, and an
+    # answer containing "</div><script>" stays text instead of becoming one.
+    st.iframe(
+        f"""
+        <div class="mermaid" style="background:{theme.TOKENS['surface']};
+             color:{theme.TOKENS['text']};font-family:{theme.FONT_BODY};
+             border-radius:10px;padding:12px;">{html.escape(code)}</div>
+        <script type="module">
+          import mermaid from "{MERMAID_CDN}";
+          mermaid.initialize({{
+            startOnLoad: true,
+            theme: "dark",
+            themeVariables: {{
+              background: "{theme.TOKENS['surface']}",
+              primaryColor: "{theme.TOKENS['surface_hi']}",
+              primaryTextColor: "{theme.TOKENS['text']}",
+              primaryBorderColor: "{theme.TOKENS['accent']}",
+              lineColor: "{theme.TOKENS['dim']}",
+              fontFamily: "{theme.FONT_BODY}"
+            }}
+          }});
+        </script>
+        """,
+        height=height,
+    )
+    with st.expander("Diagram source"):
+        st.code(code, language="mermaid")
+
+
+def render_reply(text: str, key: str = "") -> None:
+    """Render an answer, drawing whatever the model asked to have drawn.
+
+    Prose stays markdown. A chart, table or diagram block becomes the thing it
+    describes — and a block that did not validate becomes visible text rather
+    than a hole in the answer, so a bad block costs formatting, never content.
+    """
+    import pandas as pd
+
+    for position, (kind, payload) in enumerate(visuals.parse(text)):
+        slot_key = f"{key}_{position}"
+
+        if kind == "text":
+            st.markdown(payload)
+
+        elif kind == "chart":
+            if payload["title"]:
+                st.markdown(f"**{payload['title']}**")
+            st.altair_chart(visuals.to_altair(payload), width="stretch")
+            if payload["note"]:
+                st.caption(payload["note"])
+            # Identity is never colour-alone, and a chart is never the only way
+            # to read the numbers.
+            with st.expander("Table view"):
+                frame = pd.DataFrame(payload["rows"])
+                st.dataframe(frame, width="stretch", hide_index=True)
+
+        elif kind == "table":
+            if payload["title"]:
+                st.markdown(f"**{payload['title']}**")
+            st.dataframe(
+                pd.DataFrame(payload["rows"], columns=payload["columns"]),
+                width="stretch",
+                hide_index=True,
+            )
+
+        elif kind == "diagram":
+            render_diagram(payload, slot_key)
+
+        elif kind == "code":
+            st.caption(f"Proxima meant to draw this, but {payload['reason']}.")
+            st.code(payload["body"])
+
+
 def tuned_system_prompt() -> str:
     """SYSTEM_PROMPT plus whatever the settings panel and the project add.
 
@@ -878,7 +963,7 @@ with chat_tab:
                     pending = (index, item, st.empty())
                     pending[2].markdown("_Proxima is thinking..._")
                 else:
-                    st.markdown(item["agent"])
+                    render_reply(item["agent"], key=f"msg{index}")
     else:
         theme.empty_state(
             label="Session ready",
@@ -1939,10 +2024,12 @@ if pending is not None:
         # to the browser.
         if len(written) - painted >= 24:
             painted = len(written)
-            slot.markdown(written + " ▍")
+            slot.markdown(visuals.strip_blocks(written) + " ▍")
 
     pending_item["agent"] = written
-    slot.markdown(written)
+    slot.empty()
+    with slot.container():
+        render_reply(written, key=f"msg{pending_index}")
     remember_sessions()
 
 # With the answer delivered, have the model read the message back for anything
