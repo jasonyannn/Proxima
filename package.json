@@ -7,6 +7,6 @@
   "scripts": {
     "dev": "./run.sh",
     "start": "./run.sh",
-    "test": "./.venv/bin/python -W ignore proxima/tests/test_analysis.py"
+    "test": "./.venv/bin/python -W ignore -m unittest discover -s proxima/tests -p 'test_*.py' -v"
   }
 }
