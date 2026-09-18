@@ -203,5 +203,92 @@ class TestChartBuilding(unittest.TestCase):
             visuals.to_altair(spec)
 
 
+
+class TestIntent(unittest.TestCase):
+    """What the user's message asks to be drawn.
+
+    This is the deterministic half of the feature. The model may *volunteer* a
+    chart whenever its answer is numbers — the system prompt allows that — but
+    when one of these fires, a block is demanded rather than hoped for.
+    """
+
+    def test_asking_for_numbers_asks_for_a_chart(self):
+        for message in [
+            "what is the percentage of copyright risk",
+            "give me the breakdown by factor",
+            "how much of their surface do we cover?",
+            "show me the statistics",
+            "rank these features by impact",
+            "compare us against Shopify",
+            "can you chart that",
+        ]:
+            self.assertIn("chart", visuals.wants_visual(message), message)
+
+    def test_asking_about_a_flow_asks_for_a_diagram(self):
+        for message in [
+            "draw me a flowchart of the signup",
+            "what does the architecture look like",
+            "map out the user journey",
+            "describe the checkout process",
+        ]:
+            self.assertIn("diagram", visuals.wants_visual(message), message)
+
+    def test_asking_for_a_table_asks_for_a_table(self):
+        self.assertIn("table", visuals.wants_visual("give me a table of competitors"))
+        self.assertIn("table", visuals.wants_visual("show this side by side"))
+
+    def test_ordinary_questions_demand_nothing(self):
+        # A false positive here forces a chart onto an answer that is prose,
+        # which is worse than missing one: the model invents numbers to fill it.
+        for message in [
+            "what should I build next quarter, and why?",
+            "our customers keep asking for dark mode",
+            "write a user story for SSO",
+            "is this feature worth the effort",
+            "summarise what we discussed",
+        ]:
+            self.assertEqual(visuals.wants_visual(message), set(), message)
+
+    def test_only_one_block_is_ever_demanded(self):
+        # Asking a small model for three at once reliably gets one malformed.
+        wanted = visuals.wants_visual("show me a table and a chart and a diagram")
+        self.assertGreater(len(wanted), 1)
+        demanded = visuals.directive(wanted)
+        self.assertEqual(
+            sum(demanded.count(fence) for fence in
+                ("```proxima-chart", "```proxima-table", "```mermaid")),
+            1,
+        )
+
+    def test_the_reminder_is_empty_when_nothing_was_asked_for(self):
+        self.assertEqual(visuals.turn_reminder("what should I build next"), "")
+        self.assertIn("proxima-chart", visuals.turn_reminder("percentage breakdown"))
+
+    def test_the_directive_carries_no_real_values_to_copy(self):
+        # The first version used a worked example and llama3.2 answered an
+        # unrelated question with its exact labels and numbers.
+        demanded = visuals.directive({"chart"})
+        self.assertIn("<first thing>", demanded)
+        self.assertNotIn("72", demanded)
+
+
+class TestAgentPrompt(unittest.TestCase):
+    def test_the_reminder_lands_after_the_question(self):
+        # Position is the whole point: in the system prompt it was ignored.
+        from agent import ProximaAgent
+
+        agent = ProximaAgent(system_prompt="SYS")
+        built = agent._build_prompt("give me the percentage breakdown", [])
+        self.assertLess(built.index("percentage breakdown"), built.index("proxima-chart"))
+        self.assertLess(built.index("proxima-chart"), built.index("Assistant:"))
+
+    def test_an_ordinary_question_gets_no_reminder(self):
+        from agent import ProximaAgent
+
+        agent = ProximaAgent(system_prompt="SYS")
+        built = agent._build_prompt("what should I build next", [])
+        self.assertNotIn("proxima-chart", built)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

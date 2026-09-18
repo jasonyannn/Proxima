@@ -69,6 +69,18 @@ Five tabs — Chat, Features, Board, and these two analysers:
 The original agent. Describe customer feedback in plain language; it classifies
 the input as a feature, bug or piece of feedback, writes it to SQLite, and replies.
 
+**It draws, too.** Ask for percentages, a breakdown, a ranking, a comparison or a
+flow, and the answer comes back with a real chart, table or diagram rather than a
+paragraph of numbers:
+
+> *"…please examine my copyright risk associated with this, what factors are
+> copyright and the percentage of copyright."*
+
+The model emits a small typed block and Proxima renders it — Altair for charts,
+a dataframe for tables, mermaid for diagrams. See
+[Charts, tables and diagrams](#charts-tables-and-diagrams) for how it works and
+what it will not do.
+
 ### 📊 Competitor Comparison
 Matches your shipped features against each competitor's and shows:
 
@@ -176,6 +188,62 @@ should give.
 Everything here stays on this machine. None of it changes the model's weights —
 it is recall, not training.
 
+## Charts, tables and diagrams
+
+The model decides *what* the numbers are; `visuals.py` draws them. Nothing is
+parsed out of sentences — if it is not in a block, it is prose. The three blocks
+are `proxima-chart`, `proxima-table` and `mermaid`:
+
+```proxima-chart
+{"kind": "bar", "title": "Risk by factor", "unit": "%",
+ "data": [{"label": "Logo similarity", "value": 72}],
+ "note": "Estimated, not measured."}
+```
+
+### Getting a 3B model to actually use them
+
+Putting the format in the system prompt **did not work**. llama3.2 read it,
+ignored it, and wrote a markdown table — by the time it starts answering, the
+formatting rules are 3000 characters behind it. Worse, a worked example with real
+values (`Logo similarity / 72%`) got copied as *content*: the model returned those
+exact labels and numbers for an unrelated product.
+
+Two fixes, both measured rather than assumed:
+
+1. **The reminder goes after the question, not into the system prompt.** When the
+   message asks for numbers or a flow, `visuals.turn_reminder()` appends a short
+   imperative block-shape to the end of the turn, where the model is still
+   looking. This is the deterministic half of the feature.
+2. **Every example is schematic** — `<first thing>`, `value: 0` — so there is
+   nothing worth copying.
+
+On llama3.2:3b, asking for a chart, a breakdown, a diagram and a table each
+produced the right block, with zero malformed blocks. The intent detector is
+tested for false positives too: an ordinary question like *"what should I build
+next quarter"* demands nothing, because forcing a chart onto a prose answer makes
+the model invent numbers to fill it. It may still *volunteer* one when its answer
+genuinely is numbers, which is allowed.
+
+### What it will not do
+
+- **A malformed block never costs you the answer.** Trailing commas are repaired,
+  `"72%"` is read as `72`, and anything still unparseable is shown as visible text
+  with a note saying why — never a traceback mid-reply.
+- **A half-written block is held back while streaming.** Only prose streams; the
+  blocks are drawn when the fence closes.
+- **Estimates are labelled.** The prompt requires the model to say when a number
+  is its judgement rather than a measurement, and to point at the Copyright
+  Analyser tab for the measured version. It is a language model putting a number
+  on a legal question — the chart makes it legible, not correct.
+
+### Chart colours
+
+One series gets one hue (the app accent); several get a fixed categorical order,
+never cycled or generated. The palette is validated against the chart surface
+`#121620` for lightness band, chroma, colour-vision separation and contrast.
+Charts ship with a table view, and a single series carries no legend because the
+title names it.
+
 ## Layout
 
 ```
@@ -189,12 +257,14 @@ proxima/
   product_manager.py        standalone backlog/prioritisation helpers
   tests/test_analysis.py    30 tests, incl. the similarity calibration set
   tests/test_projects.py    25 tests for projects and memory scoping
+  tests/test_visuals.py     37 tests for chart/table/diagram blocks
   proxima/
     app.py                  Streamlit UI (5 tabs)
     agent.py                intent classification + Ollama client
     database.py             SQLite schema and CRUD
     workspace.py            per-chat workspaces, projects, persistence
     memory.py               recall scoping + system-prompt assembly
+    visuals.py              chart/table/diagram blocks + intent directives
     prompt.py               system prompt
     textsim.py              similarity engine (concept / expression / name)
     competitors.py          coverage matrix, gap analysis, threat scoring
