@@ -576,20 +576,27 @@ def capture_speech():
 
 # Initialize session state
 if "chats" not in st.session_state:
-    # Chats live on disk, because the workspace each one owns does.
-    restored, counter = workspace.load_sessions(USER["id"])
-    st.session_state.chats = restored
-    st.session_state.chat_counter = counter
+    # Chats live on disk, because the workspace each one owns does. So do the
+    # projects grouping them, and the recall scope, which is a memory rule
+    # rather than a per-visit preference and would be infuriating to reset.
+    state = workspace.load_state(USER["id"])
+    st.session_state.chats = state["chats"]
+    st.session_state.chat_counter = state["counter"]
+    st.session_state.projects = state["projects"]
+    st.session_state.project_counter = state["project_counter"]
+    # Written before the widget exists, which is how Streamlit seeds one.
+    st.session_state.setting_memory_scope = state["scope"]
 
     # Everything filed before accounts and workspaces existed goes to the first
     # account to sign in — whoever was using this machine already. Claiming it
     # is one-time: the next account starts empty rather than inheriting it.
-    if workspace.LEGACY_ID not in restored and workspace.claim_legacy(USER["id"]):
+    if workspace.LEGACY_ID not in state["chats"] and workspace.claim_legacy(USER["id"]):
         st.session_state.chats[workspace.LEGACY_ID] = {
             "messages": [],
             "created": datetime.now(),
             "title": workspace.LEGACY_TITLE,
             "ordinal": 0,
+            "project_id": None,
         }
 
 if "current_chat_id" not in st.session_state:
@@ -613,54 +620,147 @@ with st.sidebar:
         # Drop the cached workspace handles with the session: the next account
         # to sign in must not inherit this one's open databases.
         get_database.clear()
-        for key in ("user", "chats", "current_chat_id", "chat_counter", "chat_profile"):
+        for key in ("user", "chats", "current_chat_id", "chat_counter",
+                    "chat_profile", "projects", "project_counter",
+                    "setting_memory_scope"):
             st.session_state.pop(key, None)
         st.rerun()
 
-    theme.section("Sessions", index="01")
+    theme.section("Projects", index="01")
 
-    if st.button("New chat", use_container_width=True, type="primary"):
+    def render_chat_row(chat_id: str) -> None:
+        """One selectable chat, with its rename / move / delete menu."""
+        title = chat_title(chat_id)
+        active = chat_id == st.session_state.current_chat_id
+        open_col, menu_col = st.columns([5, 1], gap="small")
+
+        with open_col:
+            # Streamlit stamps `st-key-<widget key>` onto each element
+            # container, which is the only stable way to style one button
+            # differently from its identical siblings. The theme paints
+            # anything keyed `pxactive_` as the selected session.
+            key = f"pxactive_{chat_id}" if active else f"select_{chat_id}"
+            if st.button(title, use_container_width=True, key=key):
+                st.session_state.current_chat_id = chat_id
+                st.rerun()
+
+        with menu_col:
+            with st.popover("⋮", use_container_width=True, help="Rename, move or delete"):
+                renamed = st.text_input("Rename", value=title, key=f"rename_{chat_id}")
+                if st.button("Save", key=f"save_{chat_id}", use_container_width=True):
+                    st.session_state.chats[chat_id]["title"] = renamed.strip()
+                    remember_sessions()
+                    st.rerun()
+
+                if st.session_state.projects:
+                    options = [None] + list(st.session_state.projects)
+                    here = st.session_state.chats[chat_id].get("project_id")
+                    chosen = st.selectbox(
+                        "Project",
+                        options=options,
+                        index=options.index(here) if here in options else 0,
+                        format_func=lambda pid: (
+                            st.session_state.projects[pid]["name"] if pid else "No project"
+                        ),
+                        key=f"move_{chat_id}",
+                    )
+                    if chosen != here:
+                        move_chat(chat_id, chosen)
+                        st.rerun()
+
+                if st.button(
+                    "Delete chat", key=f"delete_{chat_id}", use_container_width=True
+                ):
+                    delete_chat(chat_id)
+                    st.rerun()
+
+    make_col, new_col = st.columns(2, gap="small")
+    if make_col.button("New project", use_container_width=True):
+        st.session_state.current_chat_id = new_chat(new_project())
+        st.rerun()
+    if new_col.button("New chat", use_container_width=True, type="primary"):
         new_chat()
         st.rerun()
 
-    if st.session_state.chats:
-        for chat_id in list(st.session_state.chats):
-            title = chat_title(chat_id)
-            active = chat_id == st.session_state.current_chat_id
-            open_col, menu_col = st.columns([5, 1], gap="small")
+    open_project_id = (st.session_state.chats.get(
+        st.session_state.current_chat_id, {}
+    ) or {}).get("project_id")
 
-            with open_col:
-                # Streamlit stamps `st-key-<widget key>` onto each element
-                # container, which is the only stable way to style one button
-                # differently from its identical siblings. The theme paints
-                # anything keyed `pxactive_` as the selected session.
-                key = f"pxactive_{chat_id}" if active else f"select_{chat_id}"
-                if st.button(title, use_container_width=True, key=key):
-                    st.session_state.current_chat_id = chat_id
+    for project_id, project in st.session_state.projects.items():
+        filed = workspace.chats_in_project(st.session_state.chats, project_id)
+        # The project holding the open chat is the one you are working in, so
+        # it is the one that should already be open when the page paints.
+        with st.expander(
+            f"{project['name']}  ·  {len(filed)}",
+            expanded=project_id == open_project_id,
+        ):
+            brief = st.text_area(
+                "Project memory",
+                value=project.get("brief", ""),
+                key=f"brief_{project_id}",
+                height=90,
+                help=(
+                    "What this project is about. Goes into every prompt for its "
+                    "chats, above anything recalled from the transcripts."
+                ),
+                placeholder="A no-code shop builder for independent makers. "
+                "Mobile-first, sells to non-technical owners.",
+            )
+            if brief != project.get("brief", ""):
+                st.session_state.projects[project_id]["brief"] = brief
+                remember_sessions()
+
+            renamed = st.text_input(
+                "Name", value=project["name"], key=f"pname_{project_id}"
+            )
+            if renamed.strip() and renamed.strip() != project["name"]:
+                st.session_state.projects[project_id]["name"] = renamed.strip()
+                remember_sessions()
+                st.rerun()
+
+            for chat_id in filed:
+                render_chat_row(chat_id)
+
+            if st.button(
+                "New chat here", key=f"add_{project_id}", use_container_width=True
+            ):
+                new_chat(project_id)
+                st.rerun()
+
+            with st.popover("Delete project", use_container_width=True):
+                st.caption(
+                    "The chats inside keep their workspaces — everything saved "
+                    "in them survives. They come out of the project unless you "
+                    "ask for them to go with it."
+                )
+                also = st.checkbox(
+                    f"Delete the {len(filed)} chat(s) too",
+                    key=f"purge_{project_id}",
+                )
+                if st.button(
+                    "Delete", key=f"pdel_{project_id}", use_container_width=True
+                ):
+                    delete_project(project_id, drop_chats=also)
+                    if st.session_state.current_chat_id not in st.session_state.chats:
+                        st.session_state.current_chat_id = next(
+                            iter(st.session_state.chats), None
+                        )
                     st.rerun()
 
-            with menu_col:
-                with st.popover("⋮", use_container_width=True, help="Rename or delete"):
-                    renamed = st.text_input(
-                        "Rename",
-                        value=title,
-                        key=f"rename_{chat_id}",
-                    )
-                    if st.button("Save", key=f"save_{chat_id}", use_container_width=True):
-                        st.session_state.chats[chat_id]["title"] = renamed.strip()
-                        st.rerun()
-                    if st.button(
-                        "Delete chat",
-                        key=f"delete_{chat_id}",
-                        use_container_width=True,
-                    ):
-                        delete_chat(chat_id)
-                        st.rerun()
-    else:
+    unfiled = workspace.chats_in_project(st.session_state.chats, None)
+    if unfiled and st.session_state.projects:
+        st.caption("Not in a project")
+    for chat_id in unfiled:
+        render_chat_row(chat_id)
+
+    if not st.session_state.chats:
         st.caption("No sessions yet — start one above.")
 
     st.divider()
     theme.section("Workspace", index="02")
+    here = current_project()
+    if here:
+        st.caption(f"In project **{here['name']}**")
     theme.pills(
         [
             (f"{len(db.list_features())} features", "accent"),
@@ -678,15 +778,42 @@ with st.sidebar:
         help="Proxima answers in this language whatever you type in.",
     )
 
-    st.toggle(
-        "Learn from my chats",
-        key="setting_recall",
-        help="Feeds a short digest of your other sessions into the prompt.",
+    st.radio(
+        "Memory",
+        options=list(workspace.SCOPES),
+        format_func=lambda scope: workspace.SCOPE_LABELS[scope],
+        key="setting_memory_scope",
+        on_change=remember_sessions,
+        help="How far back Proxima is allowed to look when answering.",
     )
+
+    scope = st.session_state.get("setting_memory_scope", workspace.DEFAULT_SCOPE)
+    if scope == "off":
+        st.caption(
+            "Only the open conversation. Nothing from your other chats reaches "
+            "the model."
+        )
+    elif scope == "project":
+        st.caption(
+            "The project's brief, plus a digest of the other chats filed under "
+            "it. Chats about other products stay out — which is the point: a "
+            "model given every conversation at once averages them together."
+        )
+        if current_project() is None:
+            st.caption(
+                "⚠ This chat is not in a project yet, so there is nothing to "
+                "recall. Put it in one from its ⋮ menu."
+            )
+    else:
+        st.caption(
+            "A digest of every chat on this account, each tagged with the "
+            "project it came from. Broadest, and the most likely to bring an "
+            "unrelated product into an answer."
+        )
+
     st.caption(
-        "Passes a summary of your earlier sessions to the agent as context. "
-        "It stays on this machine and does not change the model's weights — "
-        "this is recall, not training."
+        "Whatever the setting, this stays on this machine and does not change "
+        "the model's weights — it is recall, not training."
     )
 
     st.toggle(
