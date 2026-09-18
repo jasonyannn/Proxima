@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Proxima over the Model Context Protocol.
 
 ``python -m mcp_server`` from the app directory, or ``./mcp.sh`` from the

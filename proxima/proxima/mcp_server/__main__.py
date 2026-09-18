@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Launch the Proxima MCP server.
 
 Two transports, because MCP clients are split between them:

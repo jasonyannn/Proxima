@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Proxima as an MCP server: the product-management work, without the browser.
 
 The Streamlit app is one client for Proxima's analysers. This is a second one —

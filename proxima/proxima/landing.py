@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """The page you meet before signing in.
 
 Two jobs, in this order: say what Proxima is to someone who has never seen it,

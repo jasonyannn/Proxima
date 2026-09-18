@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """The chat input: a custom component, because Streamlit's own cannot do this.
 
 `st.text_input` only tells the server what you typed when you press Enter or

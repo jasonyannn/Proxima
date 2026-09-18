@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Competitive analysis: compare our product's features against competitors'.
 
 Produces three things the chat interface can't:

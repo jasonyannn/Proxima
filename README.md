@@ -170,3 +170,41 @@ competitors ("Northwind PM", "Cobalt Board", "Vellum Insights"). These are
 illustrative placeholders for demo purposes, **not** researched claims about any
 real company. Replace them with your own verified research before relying on any
 output.
+
+---
+
+## License
+
+Proxima is free and open source software, licensed under the
+**[GNU Affero General Public License v3.0](LICENSE)** (AGPL-3.0-only).
+
+In plain terms:
+
+- You can use, study, modify and share Proxima, commercially or not.
+- If you distribute a modified version, you must release your changes under the
+  same license.
+- **If you run a modified version as a network service**, you must offer its
+  source to the people using it. This is the clause that separates the AGPL from
+  the plain GPL, and it is the reason Proxima uses it: Proxima is a hosted web
+  app, so "never distributed, only hosted" would otherwise be a way to build a
+  closed product on this code.
+
+Each source file carries an `SPDX-License-Identifier: AGPL-3.0-only` header. The
+full license text is in [LICENSE](LICENSE).
+
+Copyright © 2026 Jason Yan.
+
+### Trademark
+
+The AGPL grants rights to the *code*. It grants no rights to the *name*.
+**"Proxima"** and the Proxima logo are trademarks of Jason Yan. Forks and
+derivative works are welcome, but must not use the Proxima name or logo in a way
+that suggests they are the official project or endorsed by it. Please pick your
+own name for your fork.
+
+### Contributing
+
+Contributions are welcome. Note that contributions are accepted under the
+AGPL-3.0, and the project may ask contributors to sign a Contributor License
+Agreement before merging, so that the copyright stays consolidated and the
+project retains the option to offer commercial licenses alongside the AGPL.

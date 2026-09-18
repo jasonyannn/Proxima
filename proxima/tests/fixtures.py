@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Fixture data for the analyser tests.
 
 Invented competitors with invented feature sets, shaped so the matching has

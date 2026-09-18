@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """One workspace per chat: each session owns its own product memory.
 
 A chat is a product you are thinking about. Features, competitors and risk

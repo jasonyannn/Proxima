@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """The board's lanes, as a component, so cards can be dragged.
 
 Streamlit has no drag and drop and no way to learn that a pointer crossed from
