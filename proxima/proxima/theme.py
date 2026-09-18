@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Visual system for the Proxima UI.
 
 Streamlit gives us the widgets; this module gives them a face. Everything here

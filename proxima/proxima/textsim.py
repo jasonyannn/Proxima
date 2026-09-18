@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Lightweight text-similarity helpers shared by the competitor and IP analysers.
 
 Deliberately dependency-free: no numpy, no embeddings, no network. The signals

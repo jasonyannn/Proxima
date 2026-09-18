@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Local accounts: sign up, sign in, and keep each person's work apart.
 
 Everything here stays on this machine. There is no identity provider and no

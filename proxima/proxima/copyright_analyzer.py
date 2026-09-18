@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Copyright / IP risk analyser for a proposed feature.
 
 WHAT THIS IS

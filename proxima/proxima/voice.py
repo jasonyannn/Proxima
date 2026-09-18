@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Speech-to-text for the chat composer.
 
 Lets someone talk to Proxima instead of typing. Recording is handled by

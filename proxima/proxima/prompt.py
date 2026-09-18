@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 SYSTEM_PROMPT = """
 You are Proxima, an AI Product Management Agent. Your role is to be a strategic partner in product decisions.
 

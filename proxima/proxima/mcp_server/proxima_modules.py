@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Import Proxima's modules from inside the MCP server package.
 
 The app's modules sit in a directory that is not a Python package — Streamlit

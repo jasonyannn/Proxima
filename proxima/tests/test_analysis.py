@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Tests for the competitor and copyright analysers.
 
 Run with:  python -m pytest tests -q      (or plain `python tests/test_analysis.py`)

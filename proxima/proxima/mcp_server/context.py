@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 Jason Yan
+
 """Which account, and which chat's workspace, an MCP call is talking about.
 
 The app answers this with the browser session: you sign in, you click a chat,
