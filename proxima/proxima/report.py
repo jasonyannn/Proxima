@@ -433,6 +433,11 @@ def _chip(text: str, tone: colors.Color) -> Flowable:
     return chip
 
 
+def _count(n: int, noun: str) -> str:
+    """"1 ticket", "3 tickets" — the s is not free."""
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 def _truncate(text: str, limit: int) -> str:
     text = " ".join(str(text or "").split())
     return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
@@ -446,7 +451,9 @@ def _cover(project: dict[str, Any], counts: dict[str, int], when: datetime) -> l
     flowables: list[Flowable] = []
 
     if mark.exists():
-        flowables += [Image(str(mark), width=17 * mm, height=17 * mm), Spacer(1, 14)]
+        logo = Image(str(mark), width=17 * mm, height=17 * mm)
+        logo.hAlign = "LEFT"
+        flowables += [logo, Spacer(1, 14)]
 
     flowables += [
         Paragraph("PROXIMA  //  PRODUCT INTELLIGENCE REPORT", S["eyebrow"]),
@@ -553,7 +560,9 @@ def _board(sprints: Sequence[dict[str, Any]], tickets: Sequence[dict[str, Any]])
         head: list[Flowable] = [Paragraph(_escape(sprint.get("name") or "Sprint"), S["item"])]
         window = " → ".join(x for x in [sprint.get("starts"), sprint.get("ends")] if x)
         detail = " · ".join(
-            x for x in [str(sprint.get("state") or ""), window, f"{len(group)} tickets"] if x
+            x
+            for x in [str(sprint.get("state") or ""), window, _count(len(group), "ticket")]
+            if x
         )
         head.append(Paragraph(_escape(detail), S["meta"]))
         if sprint.get("goal"):
@@ -570,7 +579,7 @@ def _board(sprints: Sequence[dict[str, Any]], tickets: Sequence[dict[str, Any]])
             KeepTogether(
                 [
                     Paragraph("Backlog", S["item"]),
-                    Paragraph(f"{len(loose)} tickets in no sprint", S["meta"]),
+                    Paragraph(f'{_count(len(loose), "ticket")} in no sprint', S["meta"]),
                     Spacer(1, 5),
                     ticket_rows(loose),
                 ]

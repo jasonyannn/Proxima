@@ -1,2 +1,8 @@
-streamlit>=1.36.0
+# st.download_button accepts a callable for `data` from 1.52 on, which is what
+# keeps the PDF from being rebuilt on every sidebar rerun. Verified: 1.50 does
+# not take one, 1.52 does.
+streamlit>=1.52.0
 requests>=2.31.0
+# Pure-Python PDF generation for the workspace report — no system libraries,
+# so `pip install -r` is still the whole setup on every platform.
+reportlab>=4.0

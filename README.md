@@ -132,6 +132,29 @@ the history table.
 
 ---
 
+## Exporting the workspace
+
+The sidebar, under **02 Workspace**, has a **Download PDF report**: one document
+holding everything the five tabs hold separately — features with their
+priority and impact, the board by sprint, every competitor and their feature
+list, each copyright check with its risk score and finding, feedback and bugs,
+and the chat transcript that produced all of it.
+
+It is built for someone who will never open Proxima: an investor, a co-founder,
+a lawyer reading the IP section. So it is set for paper rather than for the
+app's dark instrument panel, and the agent's markdown — headings, bullets,
+tables, code — is typeset rather than dumped.
+
+Two things it will not do. It will not invent: a section with no data says so,
+because a report that silently drops its empty parts reads as complete. And it
+never leaves the machine — the PDF is generated locally by
+[reportlab](https://pypi.org/project/reportlab/), the same way everything else
+here stays local.
+
+The button is absent, replaced by a line of explanation, until there is
+something to compile.
+
+
 ## Projects and memory
 
 A chat is one conversation about one product. A **project** is a folder of them,
@@ -327,6 +350,8 @@ proxima/
   tests/test_projects.py    25 tests for projects and memory scoping
   tests/test_visuals.py     37 tests for chart/table/diagram blocks
   tests/test_accessibility.py  27 tests, incl. computed WCAG ratios
+  tests/test_report.py      21 tests for the PDF report and its markdown
+  tests/test_agent_errors.py  15 tests for how a failed generation is explained
   proxima/
     app.py                  Streamlit UI (5 tabs)
     agent.py                intent classification + Ollama client
@@ -339,6 +364,7 @@ proxima/
     textsim.py              similarity engine (concept / expression / name)
     competitors.py          coverage matrix, gap analysis, threat scoring
     copyright_analyzer.py   IP risk model
+    report.py               the whole workspace compiled to one PDF
     seed_data.py            sample competitor catalogue
     mcp_server/             the same analysers, over MCP
     data/product.db         created on first run

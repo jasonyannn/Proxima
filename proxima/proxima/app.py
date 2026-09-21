@@ -22,7 +22,7 @@ try:
     from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from .prompt_box import prompt_box
     from .kanban import kanban
-    from . import theme, voice, workspace, landing, memory, visuals, accessibility
+    from . import theme, voice, workspace, landing, memory, visuals, accessibility, report
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
@@ -36,7 +36,7 @@ except ImportError:  # pragma: no cover
     from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
     from prompt_box import prompt_box
     from kanban import kanban
-    import theme, voice, workspace, landing, memory, visuals, accessibility
+    import theme, voice, workspace, landing, memory, visuals, accessibility, report
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -883,6 +883,28 @@ with st.sidebar:
             (f"{len(db.list_competitor_features())} rival", ""),
         ]
     )
+
+    # Export lives here rather than on a tab because it is not about any one
+    # tab: it compiles all of them. The sidebar is the only place in reach
+    # whichever tab you are reading when you decide to send this to someone.
+    messages_here = (
+        st.session_state.chats.get(st.session_state.current_chat_id, {}).get("messages")
+        or []
+    )
+    if report.is_empty(db, messages_here):
+        st.caption("Nothing to export yet — save a feature or run a check first.")
+    else:
+        st.download_button(
+            "Download PDF report",
+            # Built on click rather than every rerun: a long transcript takes a
+            # moment to typeset, and the sidebar redraws on every keystroke.
+            data=lambda: report.build(db, here, messages_here),
+            file_name=report.filename(here),
+            mime="application/pdf",
+            use_container_width=True,
+            help="Everything in this workspace — features, board, competitors, IP checks and this chat — as one PDF.",
+        )
+
     st.divider()
     theme.section("Settings", index="03")
 
