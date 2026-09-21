@@ -94,6 +94,15 @@ def _tone(value: str) -> colors.Color:
     return TONES.get(str(value or "").strip().lower(), FAINT)
 
 
+def _hex(colour: colors.Color) -> str:
+    """``#rrggbb`` for a ``<font color=...>`` tag.
+
+    ``hexval()`` returns ``0xrrggbb``, which reportlab's paragraph parser reads
+    as a decimal integer and rejects. The hash is not optional.
+    """
+    return "#" + colour.hexval()[2:]
+
+
 # ------------------------------------------------------------------- styles
 
 
@@ -396,7 +405,7 @@ def _section(index: str, label: str) -> list[Flowable]:
     """The numbered section head the tabs use, set for paper."""
     return [
         CondPageBreak(60),
-        Paragraph(f'<font color="{ACCENT.hexval()[2:]}">{index}</font>  {label.upper()}', S["eyebrow"]),
+        Paragraph(f'<font color="{_hex(ACCENT)}">{index}</font>  {label.upper()}', S["eyebrow"]),
         Spacer(1, 3),
         Rule(CONTENT_WIDTH),
         Spacer(1, 9),
@@ -409,7 +418,7 @@ def _empty(note: str) -> Flowable:
 
 def _chip(text: str, tone: colors.Color) -> Flowable:
     """One status word, boxed in its semantic colour."""
-    chip = Table([[Paragraph(f'<font color="{tone.hexval()[2:]}" size="7.5"><b>{_escape(text.upper())}</b></font>', S["meta"])]])
+    chip = Table([[Paragraph(f'<font color="{_hex(tone)}" size="7.5"><b>{_escape(text.upper())}</b></font>', S["meta"])]])
     chip.setStyle(
         TableStyle(
             [
@@ -613,7 +622,10 @@ def _competitors(
         else:
             block.append(_empty("No features recorded for this competitor."))
 
-        out.append(KeepTogether(block) if len(theirs) <= 6 else block)
+        if len(theirs) <= 6:
+            out.append(KeepTogether(block))
+        else:
+            out.extend(block)
         out.append(Spacer(1, 12))
     return out
 
@@ -733,7 +745,10 @@ def _transcript(messages: Sequence[dict[str, Any]]) -> list[Flowable]:
         if (exchange.get("agent") or "").strip():
             block.append(Paragraph("PROXIMA", S["speaker"]))
             block += markdown(exchange["agent"])
-        out.append(KeepTogether(block) if len(block) <= 4 else block)
+        if len(block) <= 4:
+            out.append(KeepTogether(block))
+        else:
+            out.extend(block)
         out += [Spacer(1, 6), Rule(CONTENT_WIDTH, RULE, 0.3), Spacer(1, 9)]
     return out
 
@@ -799,7 +814,7 @@ def build(
     name = project.get("name") or "Proxima workspace"
 
     story: list[Flowable] = []
-    story += _cover(db, counts_for(db), when) if False else _cover(project, counts_for(db), when)
+    story += _cover(project, counts_for(db), when)
     story.append(PageBreak())
     story += _features(db.list_features())
     story += _board(db.list_sprints(), db.list_tickets())
