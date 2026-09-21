@@ -146,7 +146,7 @@ class ProximaAgent:
                     continue
                 chunk = json.loads(line)
                 if chunk.get("error"):
-                    yield self._unreachable(chunk["error"])
+                    yield self._backend_failed(str(chunk["error"]).strip()[:800])
                     return
                 piece = chunk.get("response", "")
                 if piece:
@@ -158,17 +158,108 @@ class ProximaAgent:
             if not produced:
                 yield "The model returned an empty response. Try sending the message again."
         except (requests.exceptions.RequestException, json.JSONDecodeError) as exc:
-            # Say what went wrong. A canned stand-in reads like an answer and
-            # hides the fact that the model was never reached.
-            yield self._unreachable(exc)
+            # Say what went wrong, precisely. A canned stand-in reads like an
+            # answer and hides the fact that no answer was ever generated.
+            yield self._explain_failure(exc)
 
-    def _unreachable(self, detail: object) -> str:
+    # A failed generation is not one failure, and the difference is the whole
+    # of the advice. A refused connection means Ollama is down; a 404 means the
+    # model was never pulled; a 500 means Ollama is up, answering, and the
+    # model backend died behind it. Telling someone to run `ollama serve` when
+    # the server is already running sends them to debug the one thing that
+    # works, so each case says what actually happened and what to do about it.
+    def _explain_failure(self, exc: Exception) -> str:
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return (
+                "⚠️ **Ollama isn't running.** Nothing is listening on "
+                f"`{self.ollama_host}`.\n\n"
+                "Start it with `ollama serve`, then send the message again."
+            )
+
+        if isinstance(exc, requests.exceptions.Timeout):
+            return (
+                "⚠️ **The model didn't respond in time.**\n\n"
+                f"Ollama accepted the request on `{self.ollama_host}` but sent "
+                "no output for 120 seconds. It is usually still loading the "
+                "model, or the machine is loaded. Send the message again."
+            )
+
+        if isinstance(exc, requests.exceptions.HTTPError):
+            response = getattr(exc, "response", None)
+            status = getattr(response, "status_code", None)
+            reported = self._reported_error(response)
+
+            if status == 404:
+                return (
+                    f"⚠️ **The model `{self.model}` isn't installed.** "
+                    f"Ollama is running on `{self.ollama_host}`, but it has no "
+                    "such model.\n\n"
+                    f"Install it with `ollama pull {self.model}`, then send the "
+                    "message again."
+                )
+
+            if status is not None and status >= 500:
+                return self._backend_failed(reported)
+
+            return (
+                f"⚠️ **Ollama rejected the request** (HTTP {status})."
+                + (f"\n\n{self._quote(reported)}" if reported else "")
+            )
+
+        if isinstance(exc, json.JSONDecodeError):
+            return (
+                "⚠️ **Ollama sent a reply Proxima couldn't read.**\n\n"
+                f"The response from `{self.ollama_host}` was not valid JSON "
+                f"({exc}). Check that nothing else is listening on that port."
+            )
+
         return (
-            f"⚠️ **I could not reach the local model.** ({detail})\n\n"
-            "Proxima answers through Ollama on "
-            f"`{self.ollama_host}`. Start it with `ollama serve` "
-            f"(and `ollama pull {self.model}`), then send the message again."
+            f"⚠️ **The request to the local model failed.** ({exc})\n\n"
+            f"Proxima answers through Ollama on `{self.ollama_host}`."
         )
+
+    def _backend_failed(self, reported: str) -> str:
+        """Ollama is up and answering — what it runs underneath is not.
+
+        Reached both by a 5xx and by an `error` inside the stream, which is how
+        Ollama reports a model that dies partway through.
+        """
+        return (
+            "⚠️ **Ollama is running, but the model failed to load.**\n\n"
+            f"Proxima reached `{self.ollama_host}` and it answered — this is a "
+            "failure inside Ollama, not a connection problem, so restarting "
+            "the server is what clears it:\n\n"
+            "```\npkill -f \"ollama serve\" && ollama serve\n```"
+            + (f"\n\nOllama reported:\n\n{self._quote(reported)}" if reported else "")
+        )
+
+    @staticmethod
+    def _reported_error(response: object) -> str:
+        """Ollama's own words for what went wrong, from an error response.
+
+        The body carries the real cause (a dead backend, an unloadable model),
+        and it is the one part of a 500 worth showing. Reading it can itself
+        fail on a streamed response whose connection is already gone, so a
+        missing explanation is never allowed to replace the failure it explains.
+        """
+        if response is None:
+            return ""
+        try:
+            body = response.text
+        except Exception:  # pragma: no cover - the connection died mid-read
+            return ""
+        if not body:
+            return ""
+        try:
+            reported = json.loads(body).get("error", "")
+        except (ValueError, AttributeError):
+            reported = body
+        return str(reported).strip()[:800]
+
+    @staticmethod
+    def _quote(reported: str) -> str:
+        """Fence it: these errors are multi-line, and a blockquote mangles them."""
+        return f"```\n{reported}\n```"
 
     def _build_prompt(self, user_input: str, conversation_history: list[dict] = None) -> str:
         """System prompt, recent turns, the question, then the visual reminder.
