@@ -477,8 +477,9 @@ def _style_axes(chart, unit: str) -> None:
     chart.valueAxis.gridStrokeWidth = 0.3
     chart.valueAxis.visibleGrid = True
     chart.valueAxis.valueMin = 0
-    if unit:
-        chart.valueAxis.labelTextFormat = f"%s{unit}" if unit != "%" else "%s%%"
+    # "60%", not "60.0%". reportlab hands the axis floats; a tick that invents
+    # a decimal place implies a precision the data does not have.
+    chart.valueAxis.labelTextFormat = lambda v: f"{_number(v)}{unit}"
 
 
 def _paint(chart, count: int) -> None:
@@ -504,22 +505,30 @@ def _chart_drawing(spec: dict) -> Drawing | None:
     width = CONTENT_WIDTH
     multi = len(matrix) > 1
 
+    # A legend gets a band of its own above the plot. Overlapping the top tick
+    # is how a legend stops being a key and starts being noise.
+    legend_band = 18 if multi else 0
+
     if kind == "bar":
-        # Horizontal: one row per category, so height follows the data.
+        # Horizontal bars stack bottom-up in reportlab, so the first row would
+        # land at the bottom. Reversed here to read top-down, as the app does.
+        categories = list(reversed(categories))
+        matrix = [list(reversed(values)) for values in matrix]
+
         row_height = 15 if not multi else 9 * len(matrix) + 8
-        height = min(max(len(categories) * row_height + 34, 70), 430)
+        height = min(max(len(categories) * row_height + 34, 70), 430) + legend_band
         chart = HorizontalBarChart()
         left = min(_fits(categories, 7) + 10, width * 0.42)
-        chart.x, chart.y = left, 24 if multi else 16
-        chart.width = width - left - 16
-        chart.height = height - chart.y - 10
+        chart.x, chart.y = left, 16
+        chart.width = width - left - 22
+        chart.height = height - chart.y - 10 - legend_band
         chart.categoryAxis.categoryNames = [_truncate(c, LABEL_CAP) for c in categories]
     elif kind == "column":
-        height = 190
+        height = 190 + legend_band
         chart = VerticalBarChart()
-        chart.x, chart.y = 34, 40 if multi else 32
+        chart.x, chart.y = 34, 32
         chart.width = width - 50
-        chart.height = height - chart.y - 12
+        chart.height = height - chart.y - 12 - legend_band
         chart.categoryAxis.categoryNames = [_truncate(c, 18) for c in categories]
         # Angled when the labels would otherwise collide.
         if _fits(categories, 7) > (chart.width / max(len(categories), 1)) * 0.9:
@@ -527,11 +536,11 @@ def _chart_drawing(spec: dict) -> Drawing | None:
             chart.categoryAxis.labels.dy = -6
             chart.categoryAxis.labels.boxAnchor = "e"
     else:  # line, area
-        height = 190
+        height = 190 + legend_band
         chart = HorizontalLineChart()
-        chart.x, chart.y = 34, 40 if multi else 32
+        chart.x, chart.y = 34, 32
         chart.width = width - 50
-        chart.height = height - chart.y - 12
+        chart.height = height - chart.y - 12 - legend_band
         chart.categoryAxis.categoryNames = [_truncate(c, 18) for c in categories]
 
     chart.data = matrix
@@ -551,7 +560,7 @@ def _chart_drawing(spec: dict) -> Drawing | None:
             chart.barLabels.fontName = CHART_FONT
             chart.barLabels.fontSize = 7
             chart.barLabels.fillColor = INK
-            chart.barLabelFormat = (lambda v: "" if v is None else f"{v:g}{unit}")
+            chart.barLabelFormat = lambda v: f"{_number(v)}{unit}" if v is not None else ""
             chart.barLabels.dx = 4 if kind == "bar" else 0
             chart.barLabels.dy = 0 if kind == "bar" else 4
             chart.barLabels.boxAnchor = "w" if kind == "bar" else "s"
@@ -561,7 +570,7 @@ def _chart_drawing(spec: dict) -> Drawing | None:
 
     if multi:
         legend = Legend()
-        legend.x, legend.y = 0, height - 6
+        legend.x, legend.y = chart.x, height - 4
         legend.alignment = "right"
         legend.fontName = CHART_FONT
         legend.fontSize = 7
@@ -591,8 +600,10 @@ def chart_flowables(spec: dict) -> list[Flowable]:
 
     if spec.get("note"):
         out += [Spacer(1, 2), Paragraph(_inline(spec["note"]), S["meta"])]
-    out.append(Spacer(1, 8))
-    return out
+
+    # A title stranded at the foot of one page with its chart on the next reads
+    # as a heading for whatever follows it. They travel together or not at all.
+    return [KeepTogether(out), Spacer(1, 8)]
 
 
 def table_flowables(spec: dict) -> list[Flowable]:
@@ -602,9 +613,12 @@ def table_flowables(spec: dict) -> list[Flowable]:
     out += [
         Spacer(1, 2),
         _grid([spec["columns"]] + [[str(cell) for cell in row] for row in spec["rows"]]),
-        Spacer(1, 8),
     ]
-    return out
+    # Short tables keep their heading; a long one has to be free to break, and
+    # its repeated header row carries the columns onto the next page anyway.
+    if len(spec["rows"]) <= 12:
+        return [KeepTogether(out), Spacer(1, 8)]
+    return out + [Spacer(1, 8)]
 
 
 def diagram_flowables(code: str) -> list[Flowable]:
@@ -670,6 +684,13 @@ def _chip(text: str, tone: colors.Color) -> Flowable:
         )
     )
     return chip
+
+
+def _number(value: float | None) -> str:
+    """A value as a reader would write it: 60, 60.5, not 60.0."""
+    if value is None:
+        return ""
+    return f"{value:g}"
 
 
 def _count(n: int, noun: str) -> str:

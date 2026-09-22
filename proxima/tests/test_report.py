@@ -25,7 +25,20 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxima"))
 import report  # noqa: E402
 from database import DatabaseManager  # noqa: E402
 from fixtures import seed  # noqa: E402
-from reportlab.platypus import Paragraph, Table  # noqa: E402
+from reportlab.graphics.shapes import Drawing  # noqa: E402
+from reportlab.platypus import KeepTogether, Paragraph, Table  # noqa: E402
+
+
+def flatten(flowables):
+    """KeepTogether hides its contents from a plain type check."""
+    out = []
+    for f in flowables:
+        out.extend(flatten(f._content)) if isinstance(f, KeepTogether) else out.append(f)
+    return out
+
+
+def kinds(flowables):
+    return [type(f).__name__ for f in flatten(flowables)]
 
 PROJECT = {"name": "Privacy Lens App", "brief": "Red and green flags for terms and conditions."}
 
@@ -181,6 +194,114 @@ class TestFilename(unittest.TestCase):
     def test_punctuation_never_reaches_the_filename(self) -> None:
         name = report.filename({"name": "A & B / C: “D”"}, datetime(2026, 9, 22))
         self.assertEqual(name, "a-b-c-d-report-2026-09-22.pdf")
+
+
+
+CHART = (
+    '```proxima-chart\n'
+    '{"kind": "bar", "title": "Competitor Analysis", "unit": "%", "data": '
+    '[{"label": "Contract Management Platforms", "value": 60}, '
+    '{"label": "Legal Document Platforms", "value": 40}], "note": "Estimates."}\n'
+    '```'
+)
+
+
+class TestTypedBlocks(unittest.TestCase):
+    """The blocks the app draws must be drawn here too, not dumped as JSON.
+
+    This is the regression the whole section exists for: the chart directive
+    was reaching the page as its own source code.
+    """
+
+    def test_a_chart_block_becomes_a_drawing(self) -> None:
+        out = report.markdown(CHART)
+
+        self.assertIn("Drawing", kinds(out))
+        # And the spec itself must not survive as visible text.
+        rendered = " ".join(f.text for f in flatten(out) if hasattr(f, "text"))
+        self.assertNotIn("proxima-chart", rendered)
+        self.assertNotIn('"kind"', rendered)
+
+    def test_the_title_and_note_come_with_it(self) -> None:
+        rendered = " ".join(
+            f.text for f in flatten(report.markdown(CHART)) if hasattr(f, "text")
+        )
+        self.assertIn("Competitor Analysis", rendered)
+        self.assertIn("Estimates.", rendered)
+
+    def test_prose_around_a_chart_survives(self) -> None:
+        out = report.markdown(f"Before the chart.\n\n{CHART}\n\nAfter the chart.")
+        rendered = " ".join(f.text for f in flatten(out) if hasattr(f, "text"))
+        self.assertIn("Before the chart.", rendered)
+        self.assertIn("After the chart.", rendered)
+        self.assertIn("Drawing", kinds(out))
+
+    def test_every_chart_kind_draws(self) -> None:
+        for kind in ("bar", "column", "line", "area"):
+            block = (
+                '```proxima-chart\n'
+                f'{{"kind": "{kind}", "data": [{{"label": "A", "value": 1}}, '
+                '{"label": "B", "value": 2}]}\n```'
+            )
+            with self.subTest(kind=kind):
+                self.assertIn("Drawing", kinds(report.markdown(block)))
+
+    def test_a_grouped_chart_draws_one_series_per_group(self) -> None:
+        block = (
+            '```proxima-chart\n'
+            '{"kind": "column", "data": ['
+            '{"label": "Concept", "value": 62, "series": "Mine"}, '
+            '{"label": "Concept", "value": 44, "series": "Rival"}]}\n```'
+        )
+        drawing = [f for f in flatten(report.markdown(block)) if isinstance(f, Drawing)]
+        self.assertEqual(len(drawing), 1)
+
+    def test_horizontal_bars_read_top_down(self) -> None:
+        # reportlab stacks categories bottom-up, so the order is reversed on the
+        # way in. First row in the spec must be the top bar on the page.
+        spec = report.visuals.chart_spec(
+            '{"kind": "bar", "data": [{"label": "First", "value": 1}, '
+            '{"label": "Second", "value": 2}]}'
+        )
+        drawing = report._chart_drawing(spec)
+        chart = drawing.contents[0]
+        self.assertEqual(chart.categoryAxis.categoryNames[-1], "First")
+
+    def test_a_table_block_becomes_a_table(self) -> None:
+        block = (
+            '```proxima-table\n'
+            '{"title": "Overlap", "columns": ["Rival", "Overlap"], '
+            '"rows": [["Northwind", "18%"]]}\n```'
+        )
+        out = report.markdown(block)
+        self.assertIn("Table", kinds(out))
+        rendered = " ".join(f.text for f in flatten(out) if hasattr(f, "text"))
+        self.assertIn("Overlap", rendered)
+
+    def test_a_mermaid_block_keeps_its_source(self) -> None:
+        out = report.markdown("```mermaid\nflowchart TD\n  A --> B\n```")
+        rendered = " ".join(f.text for f in flatten(out) if hasattr(f, "text"))
+        self.assertIn("Diagram", rendered)
+        self.assertIn("Table", kinds(out))  # the fenced source block
+
+    def test_a_malformed_chart_degrades_to_its_source(self) -> None:
+        # visuals rejects it; the reader still gets to see what was meant,
+        # with the reason, exactly as the app does.
+        out = report.markdown('```proxima-chart\n{"kind": "bar", "data": []}\n```')
+        rendered = " ".join(f.text for f in flatten(out) if hasattr(f, "text"))
+        self.assertIn("Unrendered block", rendered)
+        self.assertIn("Table", kinds(out))
+
+    def test_an_ordinary_fence_is_still_code(self) -> None:
+        out = report.markdown("```\nplain code\n```")
+        self.assertEqual(kinds(out), ["Table"])
+
+    def test_a_chart_inside_an_ip_report_renders(self) -> None:
+        # The blocks appear in stored reports too, not only the transcript.
+        db = fresh_db()
+        db.create_ip_assessment("Engine", "Compares clauses.", "Medium", 46.0, CHART)
+        pdf = report.build(db, PROJECT, [])
+        self.assertTrue(pdf.startswith(b"%PDF-"))
 
 
 if __name__ == "__main__":
