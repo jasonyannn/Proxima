@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import sqlite3
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +128,68 @@ def authenticate(email: str, password: str) -> dict[str, Any]:
         )
         connection.commit()
         return _row_to_user(row)
+
+
+# --- staying signed in on this machine -----------------------------------
+#
+# Streamlit rebuilds session state on every browser connection, so a refresh
+# signed you out. This file is what survives it.
+#
+# Be clear about what it is: a note of which account to restore, not a secret.
+# There is no client-side half to it, so anyone who can open this app on this
+# machine gets the remembered session — the same reach they already have over
+# the workspace databases sitting beside it. It buys convenience on a personal
+# machine and nothing at all against someone already on it. If Proxima ever
+# faces a network, this needs replacing with a real cookie and a server-side
+# session, not extending.
+
+SESSION_FILE = DATA / "session.json"
+REMEMBER_DAYS = 30
+
+
+def remember(user_id: int) -> None:
+    """Note this account as the one to restore, until it expires."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    expires = datetime.now() + timedelta(days=REMEMBER_DAYS)
+    SESSION_FILE.write_text(
+        json.dumps({"user_id": int(user_id), "expires": expires.isoformat()}),
+        encoding="utf-8",
+    )
+
+
+def forget() -> None:
+    """Sign out for good — the next load shows the landing page."""
+    SESSION_FILE.unlink(missing_ok=True)
+
+
+def remembered() -> dict[str, Any] | None:
+    """The account to restore, or None.
+
+    Anything unreadable, expired, or pointing at an account that no longer
+    exists is cleared rather than raised: the cost of being wrong here is one
+    sign-in, and the cost of throwing is an app that will not start.
+    """
+    try:
+        stored = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+        if datetime.fromisoformat(stored["expires"]) < datetime.now():
+            forget()
+            return None
+        user = by_id(int(stored["user_id"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        forget()
+        return None
+
+    if user is None:
+        forget()
+    return user
+
+
+def by_id(user_id: int) -> dict[str, Any] | None:
+    with closing(_connect()) as connection:
+        row = connection.execute(
+            "SELECT * FROM account WHERE id = ?", (user_id,)
+        ).fetchone()
+        return _row_to_user(row) if row else None
 
 
 def count() -> int:

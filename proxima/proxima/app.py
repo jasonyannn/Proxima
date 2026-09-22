@@ -28,7 +28,10 @@ try:
     )
     from .prompt_box import prompt_box
     from .kanban import kanban
-    from . import theme, voice, workspace, landing, memory, visuals, accessibility, report
+    from . import (
+        theme, voice, workspace, landing, memory, visuals, accessibility,
+        report, accounts,
+    )
 except ImportError:  # pragma: no cover
     from agent import ProximaAgent, detect_saveable, suggestions_from_model
     from database import DatabaseManager
@@ -48,7 +51,8 @@ except ImportError:  # pragma: no cover
     )
     from prompt_box import prompt_box
     from kanban import kanban
-    import theme, voice, workspace, landing, memory, visuals, accessibility, report
+    import theme, voice, workspace, landing, memory, visuals, accessibility
+    import report, accounts
 
 
 OLLAMA_HOST = "http://localhost:11434"
@@ -77,9 +81,16 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 if st.session_state.user is None:
+    # A refresh is a new Streamlit session, so without this the landing page
+    # appears every time the page reloads. See accounts.remembered() for what
+    # this does and does not protect.
+    st.session_state.user = accounts.remembered()
+
+if st.session_state.user is None:
     signed_in = landing.render(LOGO_MARK)
     if signed_in:
         st.session_state.user = signed_in
+        accounts.remember(signed_in["id"])
         st.rerun()
     st.stop()
 
@@ -742,6 +753,9 @@ with st.sidebar:
     who, out = st.columns([3, 1], gap="small")
     who.caption(f"Signed in as **{USER['name']}**")
     if out.button("Exit", help=f"Sign out of {USER['email']}", use_container_width=True):
+        # Sign out means stay out: without this the next page load reads the
+        # remembered session straight back in.
+        accounts.forget()
         # Drop the cached workspace handles with the session: the next account
         # to sign in must not inherit this one's open databases.
         get_database.clear()
