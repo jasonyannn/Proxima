@@ -350,8 +350,9 @@ proxima/
   tests/test_projects.py    25 tests for projects and memory scoping
   tests/test_visuals.py     37 tests for chart/table/diagram blocks
   tests/test_accessibility.py  27 tests, incl. computed WCAG ratios
-  tests/test_report.py      21 tests for the PDF report and its markdown
+  tests/test_report.py      32 tests for the PDF report, its charts and markdown
   tests/test_agent_errors.py  15 tests for how a failed generation is explained
+  tests/test_accounts.py    14 tests for sign-in and staying signed in
   proxima/
     app.py                  Streamlit UI (5 tabs)
     agent.py                intent classification + Ollama client
