@@ -354,7 +354,15 @@ proxima/
   tests/test_agent_errors.py  15 tests for how a failed generation is explained
   tests/test_accounts.py    14 tests for sign-in and staying signed in
   proxima/
-    app.py                  Streamlit UI (5 tabs)
+    app.py                  wiring: state, auth, chat operations, tab calls
+    sidebar.py              projects, workspace and settings
+    tabs/                   one module per tab, each a render(...)
+      chat.py               the conversation
+      features.py           what is filed, and what the chat implies
+      board.py              sprints and tickets
+      compare.py            ours against theirs, feature by feature
+      copyright.py          IP risk, one feature or the whole workspace
+      constants.py          status vocabulary and how each one reads
     agent.py                intent classification + Ollama client
     database.py             SQLite schema and CRUD
     workspace.py            per-chat workspaces, projects, persistence
@@ -366,6 +374,9 @@ proxima/
     competitors.py          coverage matrix, gap analysis, threat scoring
     copyright_analyzer.py   IP risk model
     report.py               the whole workspace compiled to one PDF
+    report_blocks.py        charts, tables and diagrams inside an answer
+    report_style.py         the report's palette, type and small marks
+    theme_css.py            the stylesheet theme.py injects
     seed_data.py            sample competitor catalogue
     mcp_server/             the same analysers, over MCP
     data/product.db         created on first run

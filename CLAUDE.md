@@ -48,18 +48,27 @@ Run it before opening a PR. Empty output means you are fine.
 
 ### Where the repo stands
 
-As of 2026-09-22, three files are over and one is at the line:
+As of 2026-09-22, every file is under the limit. The layout that got it there,
+worth knowing before you add to it:
 
-| file | lines | the seam to split on |
-|---|---|---|
-| `proxima/proxima/app.py` | 2,317 | Each tab is already its own block. `ip_tab` (L1939–2254), `compare_tab` (L1628–1937) and `board_tab` (L1412–1626) lift out to `tabs/` almost untouched — that alone takes it under 1,000. |
-| `proxima/proxima/report.py` | 1,136 | `# --- blocks` (L430–637) is the chart/table/diagram renderer and depends on little else — it becomes `report_blocks.py`. The markdown converter (L221–429) is a second candidate. |
-| `proxima/proxima/theme.py` | 1,008 | The CSS string (L31–786) and the render helpers (L787+) are two different things sharing a file. |
-| `proxima/proxima/agent.py` | 997 | At the limit. The next feature added here splits it first — the Ollama client and the intent classification are separate jobs. |
+| module | holds |
+|---|---|
+| `app.py` (891) | wiring: state, auth gate, the chat operations, and the call into each tab |
+| `sidebar.py` (444) | projects, workspace and settings |
+| `tabs/*.py` | one module per tab — `chat`, `features`, `board`, `compare`, `copyright` — each a `render(...)` taking what it needs as keyword arguments |
+| `tabs/constants.py` | the words a status can take and the glyph or tone it wears |
+| `report.py` / `report_blocks.py` / `report_style.py` | the PDF: document, the charts and tables inside an answer, and the ink |
+| `theme.py` / `theme_css.py` | the design system, and the stylesheet it injects |
 
-These are pre-existing and are not required to be fixed in an unrelated change.
-The rule binds new work: do not make a file over the limit longer, and do not
-push a file over the limit.
+Two things this split made explicit, both worth preserving:
+
+- **A tab takes what it needs; it does not reach back into `app.py`.** The
+  transcript, the workspace and the app's callbacks arrive as arguments. Before
+  the split, `messages` was a module-level binding the Chat tab happened to
+  create and four other tabs happened to read — invisible until it broke.
+- **`render()` returns anything later code needs.** The Chat tab hands back the
+  pending exchange, because answering it is deliberately the last thing the app
+  does.
 
 ## Other conventions
 
