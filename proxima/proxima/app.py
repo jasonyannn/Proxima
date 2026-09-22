@@ -891,19 +891,43 @@ with st.sidebar:
         st.session_state.chats.get(st.session_state.current_chat_id, {}).get("messages")
         or []
     )
-    if report.is_empty(db, messages_here):
-        st.caption("Nothing to export yet — save a feature or run a check first.")
-    else:
-        st.download_button(
-            "Download PDF report",
-            # Built on click rather than every rerun: a long transcript takes a
-            # moment to typeset, and the sidebar redraws on every keystroke.
-            data=lambda: report.build(db, here, messages_here),
-            file_name=report.filename(here),
-            mime="application/pdf",
-            use_container_width=True,
-            help="Everything in this workspace — features, board, competitors, IP checks and this chat — as one PDF.",
-        )
+    # Always on screen, greyed rather than hidden. A control that only exists
+    # once the workspace is full cannot be found by someone looking for it in
+    # an empty one, and they conclude the feature was never built.
+    nothing_here = report.is_empty(db, messages_here)
+    st.download_button(
+        "Download PDF report",
+        # Built on click rather than every rerun: a long transcript takes a
+        # moment to typeset, and the sidebar redraws on every keystroke.
+        data=lambda: report.build(db, here, messages_here),
+        file_name=report.filename(here),
+        mime="application/pdf",
+        use_container_width=True,
+        disabled=nothing_here,
+        help="Everything in this workspace — features, board, competitors, IP checks and this chat — as one PDF.",
+    )
+
+    if nothing_here:
+        # The part that is genuinely not obvious: a workspace belongs to a
+        # chat, not to the account. Empty here says nothing about the chat
+        # above it, so point at the ones that do have something to export.
+        elsewhere = [
+            chat_title(other_id)
+            for other_id in st.session_state.chats
+            if other_id != st.session_state.current_chat_id
+            and not report.is_empty(
+                get_database(other_id, USER["id"]),
+                st.session_state.chats[other_id].get("messages") or [],
+            )
+        ]
+        if elsewhere:
+            named = ", ".join(f"**{name}**" for name in elsewhere[:3])
+            st.caption(
+                f"This chat is empty. Every chat keeps its own workspace — "
+                f"there is work to export in {named}."
+            )
+        else:
+            st.caption("Nothing to export yet — save a feature or run a check first.")
 
     st.divider()
     theme.section("Settings", index="03")
