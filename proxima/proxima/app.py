@@ -19,7 +19,13 @@ try:
         STATUS_PARTIAL,
         STATUS_UNKNOWN,
     )
-    from .copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
+    from .copyright_analyzer import (
+        CopyrightAnalyzer,
+        CopyrightSweep,
+        DISCLAIMER,
+        sweep_from_json,
+        sweep_to_json,
+    )
     from .prompt_box import prompt_box
     from .kanban import kanban
     from . import theme, voice, workspace, landing, memory, visuals, accessibility, report
@@ -33,7 +39,13 @@ except ImportError:  # pragma: no cover
         STATUS_PARTIAL,
         STATUS_UNKNOWN,
     )
-    from copyright_analyzer import CopyrightAnalyzer, CopyrightSweep, DISCLAIMER
+    from copyright_analyzer import (
+        CopyrightAnalyzer,
+        CopyrightSweep,
+        DISCLAIMER,
+        sweep_from_json,
+        sweep_to_json,
+    )
     from prompt_box import prompt_box
     from kanban import kanban
     import theme, voice, workspace, landing, memory, visuals, accessibility, report
@@ -1975,9 +1987,30 @@ with ip_tab:
                     "competitors": sorted({f["competitor_name"] for f in rival_features}),
                     "from_chat": [f["title"] for f in from_chat],
                 }
+            # A sweep is minutes of work over the whole workspace. Keeping it
+            # only in session state meant a refresh, or a trip to another chat
+            # and back, silently threw it away and asked for it again.
+            db.save_ip_sweep(
+                sweep_to_json(
+                    st.session_state.ip_sweep["rows"],
+                    st.session_state.ip_sweep["competitors"],
+                    st.session_state.ip_sweep["from_chat"],
+                )
+            )
         st.rerun()
 
     sweep = st.session_state.get("ip_sweep")
+    if not sweep:
+        # Nothing in this session yet — read back the last one for this
+        # workspace. Unreadable or absent simply means no sweep to show.
+        stored = db.load_ip_sweep()
+        if stored:
+            sweep = sweep_from_json(stored["payload"])
+            if sweep:
+                sweep["ran_at"] = stored.get("created_at")
+                st.session_state.ip_sweep = sweep
+            else:
+                db.clear_ip_sweep()
     if sweep and sweep["rows"]:
         rows = sweep["rows"]
         hottest = rows[0]
@@ -1997,6 +2030,14 @@ with ip_tab:
             ]
             + ([(f"{len(sweep['from_chat'])} read from chat", "")] if sweep["from_chat"] else [])
         )
+
+        # A kept result should say it is kept, or the reader cannot tell whether
+        # it reflects the features they added since.
+        if sweep.get("ran_at"):
+            st.caption(
+                f"Saved scan from {sweep['ran_at']} — press **Scan everything** "
+                "to run it again against the current workspace."
+            )
 
         if hottest.worst_score >= 50:
             st.warning(
@@ -2043,6 +2084,7 @@ with ip_tab:
 
         if st.button("Clear results", key="clear_sweep"):
             st.session_state.pop("ip_sweep", None)
+            db.clear_ip_sweep()
             st.rerun()
 
         st.divider()

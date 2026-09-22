@@ -127,6 +127,47 @@ class DatabaseManager:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ip_sweep (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    payload TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            connection.commit()
+
+    # --- the copyright sweep, kept between sessions ----------------------
+    #
+    # One row, always id 1: the sweep is a snapshot of the whole workspace, so
+    # a second one is not history, it is a stale copy of the same question.
+
+    def save_ip_sweep(self, payload: str) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute(
+                """
+                INSERT INTO ip_sweep (id, payload, created_at)
+                VALUES (1, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(id) DO UPDATE SET
+                    payload = excluded.payload,
+                    created_at = excluded.created_at
+                """,
+                (payload,),
+            )
+            connection.commit()
+
+    def load_ip_sweep(self) -> dict[str, Any] | None:
+        """The stored sweep with the time it was run, or None."""
+        with closing(self.connect()) as connection:
+            row = connection.execute(
+                "SELECT payload, created_at FROM ip_sweep WHERE id = 1"
+            ).fetchone()
+            return dict(row) if row else None
+
+    def clear_ip_sweep(self) -> None:
+        with closing(self.connect()) as connection:
+            connection.execute("DELETE FROM ip_sweep WHERE id = 1")
             connection.commit()
 
     def create_feature(

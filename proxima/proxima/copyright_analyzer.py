@@ -493,6 +493,101 @@ class SweepRow:
     report: IPReport | None = None      # the full reading, against everyone
 
 
+# --- persistence ---------------------------------------------------------
+#
+# A sweep costs real time to run, so it is worth keeping. These turn the
+# dataclasses above into plain JSON and back, rather than pickling them: a
+# pickle of an app class cannot survive the class changing, and this data
+# outlives releases.
+
+
+def sweep_to_json(rows: list[SweepRow], competitors: list[str], from_chat: list[str]) -> str:
+    def cell(c: SweepCell) -> dict[str, Any]:
+        return asdict(c)
+
+    def report(r: "IPReport | None") -> dict[str, Any] | None:
+        if r is None:
+            return None
+        return {
+            "feature_title": r.feature_title,
+            "feature_description": r.feature_description,
+            "risk_level": r.risk_level,
+            "risk_score": r.risk_score,
+            "matches": [asdict(m) for m in r.matches],
+            "findings": [asdict(f) for f in r.findings],
+            "recommendations": list(r.recommendations),
+            "disclaimer": r.disclaimer,
+        }
+
+    return json.dumps(
+        {
+            "version": 1,
+            "competitors": list(competitors),
+            "from_chat": list(from_chat),
+            "rows": [
+                {
+                    "feature_title": row.feature_title,
+                    "feature_description": row.feature_description,
+                    "worst_score": row.worst_score,
+                    "worst_level": row.worst_level,
+                    "worst_competitor": row.worst_competitor,
+                    "per_competitor": {k: cell(v) for k, v in row.per_competitor.items()},
+                    "report": report(row.report),
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
+def sweep_from_json(raw: str) -> dict[str, Any] | None:
+    """Rebuild a stored sweep, or None if it cannot be read.
+
+    A stored sweep that no longer parses — written by an older version, or
+    truncated — is dropped rather than raised. The cost is one rescan; the
+    alternative is a tab that will not open.
+    """
+    try:
+        payload = json.loads(raw)
+        rows = []
+        for item in payload["rows"]:
+            stored = item.get("report")
+            rows.append(
+                SweepRow(
+                    feature_title=item["feature_title"],
+                    feature_description=item.get("feature_description", ""),
+                    worst_score=float(item["worst_score"]),
+                    worst_level=item["worst_level"],
+                    worst_competitor=item.get("worst_competitor"),
+                    per_competitor={
+                        name: SweepCell(**cell)
+                        for name, cell in (item.get("per_competitor") or {}).items()
+                    },
+                    report=(
+                        IPReport(
+                            feature_title=stored["feature_title"],
+                            feature_description=stored.get("feature_description", ""),
+                            risk_level=stored["risk_level"],
+                            risk_score=float(stored["risk_score"]),
+                            matches=[Match(**m) for m in stored.get("matches", [])],
+                            findings=[Finding(**f) for f in stored.get("findings", [])],
+                            recommendations=list(stored.get("recommendations", [])),
+                            disclaimer=stored.get("disclaimer", DISCLAIMER),
+                        )
+                        if stored
+                        else None
+                    ),
+                )
+            )
+        return {
+            "rows": rows,
+            "competitors": list(payload.get("competitors") or []),
+            "from_chat": list(payload.get("from_chat") or []),
+        }
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 class CopyrightSweep:
     """Every feature against every competitor, in one pass.
 

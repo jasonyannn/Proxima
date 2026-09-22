@@ -26,7 +26,12 @@ from competitors import (  # noqa: E402
     STATUS_MATCH,
     classify,
 )
-from copyright_analyzer import CopyrightAnalyzer  # noqa: E402
+from copyright_analyzer import (  # noqa: E402
+    CopyrightAnalyzer,
+    CopyrightSweep,
+    sweep_from_json,
+    sweep_to_json,
+)
 from database import DatabaseManager  # noqa: E402
 from fixtures import seed  # noqa: E402
 from textsim import (  # noqa: E402
@@ -324,6 +329,101 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["risk_level"], "Low")
 
+
+
+class TestSweepPersistence(unittest.TestCase):
+    """A sweep must survive a refresh.
+
+    It was session-only, so leaving the tab and coming back threw away minutes
+    of scoring and asked for it again. These pin the round-trip, including the
+    part that is easy to lose: the full report hanging off each row.
+    """
+
+    def setUp(self) -> None:
+        handle, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        self.db = DatabaseManager(self.path)
+        self.db.init_db()
+        seed(self.db)
+        self.db.create_feature("Fairness score", "Score terms and conditions for fairness.")
+        self.rows = CopyrightSweep(CopyrightAnalyzer(self.db)).run(
+            self.db.list_features(), self.db.list_competitor_features()
+        )
+        self.competitors = sorted(
+            {f["competitor_name"] for f in self.db.list_competitor_features()}
+        )
+
+    def tearDown(self) -> None:
+        os.unlink(self.path)
+
+    def _round_trip(self) -> dict:
+        self.db.save_ip_sweep(sweep_to_json(self.rows, self.competitors, ["Fairness score"]))
+        return sweep_from_json(self.db.load_ip_sweep()["payload"])
+
+    def test_scores_survive(self) -> None:
+        back = self._round_trip()
+        self.assertEqual(len(back["rows"]), len(self.rows))
+        self.assertEqual(
+            [(r.feature_title, r.worst_score, r.worst_level) for r in back["rows"]],
+            [(r.feature_title, r.worst_score, r.worst_level) for r in self.rows],
+        )
+
+    def test_the_per_competitor_grid_survives(self) -> None:
+        back = self._round_trip()
+        before = {k: v.risk_score for k, v in self.rows[0].per_competitor.items()}
+        after = {k: v.risk_score for k, v in back["rows"][0].per_competitor.items()}
+        self.assertEqual(before, after)
+        self.assertEqual(back["competitors"], self.competitors)
+
+    def test_the_full_report_survives(self) -> None:
+        # The expensive part, and the easiest to drop: matches and findings.
+        original = next(r for r in self.rows if r.report and r.report.matches)
+        back = self._round_trip()
+        restored = next(
+            r for r in back["rows"] if r.feature_title == original.feature_title
+        )
+        self.assertEqual(len(restored.report.matches), len(original.report.matches))
+        self.assertEqual(len(restored.report.findings), len(original.report.findings))
+        self.assertEqual(
+            restored.report.recommendations, original.report.recommendations
+        )
+
+    def test_computed_relationship_still_works(self) -> None:
+        # `relationship` is a property, not a stored field. It has to be
+        # derivable from what was written, or it comes back blank.
+        back = self._round_trip()
+        match = next(
+            m for r in back["rows"] if r.report for m in r.report.matches
+        )
+        self.assertIn(
+            match.relationship,
+            {
+                "Near-verbatim wording",
+                "Same idea, independent expression",
+                "Same idea, overlapping wording",
+                "Loosely related",
+            },
+        )
+
+    def test_saving_twice_replaces_rather_than_accumulates(self) -> None:
+        self.db.save_ip_sweep(sweep_to_json(self.rows, self.competitors, []))
+        self.db.save_ip_sweep(sweep_to_json(self.rows[:1], self.competitors, []))
+        back = sweep_from_json(self.db.load_ip_sweep()["payload"])
+        self.assertEqual(len(back["rows"]), 1)
+
+    def test_clearing_removes_it(self) -> None:
+        self.db.save_ip_sweep(sweep_to_json(self.rows, self.competitors, []))
+        self.db.clear_ip_sweep()
+        self.assertIsNone(self.db.load_ip_sweep())
+
+    def test_no_sweep_reads_as_none(self) -> None:
+        self.assertIsNone(self.db.load_ip_sweep())
+
+    def test_unreadable_payload_degrades_to_none(self) -> None:
+        # One rescan is an acceptable cost. A tab that will not open is not.
+        for junk in ("{not json", "{}", '{"rows": [{"bad": 1}]}', "null"):
+            with self.subTest(junk=junk):
+                self.assertIsNone(sweep_from_json(junk))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
