@@ -737,6 +737,18 @@ if "current_chat_id" not in st.session_state:
 if not st.session_state.chats or st.session_state.current_chat_id is None:
     new_chat()
 
+# Session state that belongs to one chat rather than to the app. Streamlit has
+# a single namespace for the whole session, so anything left here survives a
+# move to another chat — and a copyright sweep or a product profile from one
+# product then reads as if it were about the next one. Cleared on the way in,
+# where every path that changes chats has to pass, rather than at each of them.
+PER_CHAT_STATE = ("ip_sweep", "chat_profile")
+
+if st.session_state.get("open_chat_was") != st.session_state.current_chat_id:
+    for key in PER_CHAT_STATE:
+        st.session_state.pop(key, None)
+    st.session_state.open_chat_was = st.session_state.current_chat_id
+
 # The theme is injected before sign-in, when nobody's settings are known yet.
 # This is the second pass: same custom properties, overridden for this account.
 overrides = accessibility.css(current_settings())
@@ -831,36 +843,17 @@ with st.sidebar:
         filed = workspace.chats_in_project(st.session_state.chats, project_id)
         # The project holding the open chat is the one you are working in, so
         # it is the one that should already be open when the page paints.
-        with st.expander(
-            f"{project['name']}  ·  {len(filed)}",
-            expanded=project_id == open_project_id,
-        ):
-            brief = st.text_area(
-                "Project memory",
-                value=project.get("brief", ""),
-                key=f"brief_{project_id}",
-                height=90,
-                help=(
-                    "What this project is about. Goes into every prompt for its "
-                    "chats, above anything recalled from the transcripts."
-                ),
-                placeholder="A no-code shop builder for independent makers. "
-                "Mobile-first, sells to non-technical owners.",
-            )
-            if brief != project.get("brief", ""):
-                st.session_state.projects[project_id]["brief"] = brief
-                remember_sessions()
+        # "· 1" read as a version or an index. Say what the number counts.
+        label = f"{project['name']}  ·  {len(filed)} chat" + ("" if len(filed) == 1 else "s")
 
-            renamed = st.text_input(
-                "Name", value=project["name"], key=f"pname_{project_id}"
-            )
-            if renamed.strip() and renamed.strip() != project["name"]:
-                st.session_state.projects[project_id]["name"] = renamed.strip()
-                remember_sessions()
-                st.rerun()
-
+        with st.expander(label, expanded=project_id == open_project_id):
+            # Chats first: picking one is why a project gets opened. The brief
+            # and the name are settings — reached now and then, not every time,
+            # so they fold away instead of sitting between you and the list.
             for chat_id in filed:
                 render_chat_row(chat_id)
+            if not filed:
+                st.caption("No chats in this project yet.")
 
             if st.button(
                 "New chat here", key=f"add_{project_id}", use_container_width=True
@@ -868,18 +861,46 @@ with st.sidebar:
                 new_chat(project_id)
                 st.rerun()
 
-            with st.popover("Delete project", use_container_width=True):
+            with st.popover("Project settings", use_container_width=True):
+                brief = st.text_area(
+                    "Project memory",
+                    value=project.get("brief", ""),
+                    key=f"brief_{project_id}",
+                    height=90,
+                    help=(
+                        "What this project is about. Goes into every prompt for its "
+                        "chats, above anything recalled from the transcripts."
+                    ),
+                    placeholder="A no-code shop builder for independent makers. "
+                    "Mobile-first, sells to non-technical owners.",
+                )
+                if brief != project.get("brief", ""):
+                    st.session_state.projects[project_id]["brief"] = brief
+                    remember_sessions()
+
+                renamed = st.text_input(
+                    "Name", value=project["name"], key=f"pname_{project_id}"
+                )
+                if renamed.strip() and renamed.strip() != project["name"]:
+                    st.session_state.projects[project_id]["name"] = renamed.strip()
+                    remember_sessions()
+                    st.rerun()
+
+                st.divider()
+
+                # Behind the same fold as the settings, and behind a tick of its
+                # own: deleting a project should not be one stray click away
+                # from opening a chat inside it.
                 st.caption(
-                    "The chats inside keep their workspaces — everything saved "
-                    "in them survives. They come out of the project unless you "
-                    "ask for them to go with it."
+                    "Deleting the project keeps the chats inside — everything "
+                    "saved in them survives, they just come out of the project."
                 )
                 also = st.checkbox(
-                    f"Delete the {len(filed)} chat(s) too",
+                    f"Delete the {len(filed)} chat" + ("" if len(filed) == 1 else "s") + " too",
                     key=f"purge_{project_id}",
                 )
                 if st.button(
-                    "Delete", key=f"pdel_{project_id}", use_container_width=True
+                    "Delete project", key=f"pdel_{project_id}", use_container_width=True
                 ):
                     delete_project(project_id, drop_chats=also)
                     if st.session_state.current_chat_id not in st.session_state.chats:

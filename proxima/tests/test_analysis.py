@@ -419,6 +419,23 @@ class TestSweepPersistence(unittest.TestCase):
     def test_no_sweep_reads_as_none(self) -> None:
         self.assertIsNone(self.db.load_ip_sweep())
 
+    def test_a_sweep_belongs_to_one_workspace(self) -> None:
+        # Each chat carries its own workspace, so a scan run under one product
+        # must be invisible under the next. (The session-state half of this —
+        # not showing a stale sweep after switching chats — is guarded in
+        # app.py by PER_CHAT_STATE.)
+        handle, other_path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        other = DatabaseManager(other_path)
+        other.init_db()
+        try:
+            self.db.save_ip_sweep(sweep_to_json(self.rows, self.competitors, []))
+
+            self.assertIsNotNone(self.db.load_ip_sweep())
+            self.assertIsNone(other.load_ip_sweep())
+        finally:
+            os.unlink(other_path)
+
     def test_unreadable_payload_degrades_to_none(self) -> None:
         # One rescan is an acceptable cost. A tab that will not open is not.
         for junk in ("{not json", "{}", '{"rows": [{"bad": 1}]}', "null"):
