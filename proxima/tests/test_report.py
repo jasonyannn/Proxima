@@ -23,6 +23,8 @@ from datetime import datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "proxima"))
 
 import report  # noqa: E402
+import report_blocks  # noqa: E402
+import visuals  # noqa: E402
 from database import DatabaseManager  # noqa: E402
 from fixtures import seed  # noqa: E402
 from reportlab.graphics.shapes import Drawing  # noqa: E402
@@ -259,11 +261,11 @@ class TestTypedBlocks(unittest.TestCase):
     def test_horizontal_bars_read_top_down(self) -> None:
         # reportlab stacks categories bottom-up, so the order is reversed on the
         # way in. First row in the spec must be the top bar on the page.
-        spec = report.visuals.chart_spec(
+        spec = visuals.chart_spec(
             '{"kind": "bar", "data": [{"label": "First", "value": 1}, '
             '{"label": "Second", "value": 2}]}'
         )
-        drawing = report._chart_drawing(spec)
+        drawing = report_blocks._chart_drawing(spec)
         chart = drawing.contents[0]
         self.assertEqual(chart.categoryAxis.categoryNames[-1], "First")
 
